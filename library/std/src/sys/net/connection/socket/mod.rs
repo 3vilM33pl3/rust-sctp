@@ -7,6 +7,8 @@ use crate::mem::MaybeUninit;
 use crate::net::{
     Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs,
 };
+#[cfg(target_os = "linux")]
+use crate::os::fd::FromRawFd;
 use crate::sys::helpers::run_with_cstr;
 use crate::sys::net::connection::each_addr;
 use crate::sys::{AsInner, FromInner};
@@ -351,6 +353,806 @@ pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
                 .map(|_| LookupHost { original: res, cur: res, port })
         }
     })
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SCTP streams/listeners (Linux only)
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(target_os = "linux")]
+const IPPROTO_SCTP_LINUX: c_int = 132;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_INITMSG: c_int = 2;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_NODELAY: c_int = 3;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_RECVRCVINFO: c_int = 32;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_EVENT: c_int = 127;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_BINDX_ADD: c_int = 100;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_CONNECTX: c_int = 110;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_CONNECTX_OLD: c_int = 107;
+#[cfg(target_os = "linux")]
+const SCTP_CMSG_SNDINFO: c_int = 2;
+#[cfg(target_os = "linux")]
+const SCTP_CMSG_RCVINFO: c_int = 3;
+
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_DATA_IO: u16 = 0x8000;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_ASSOCIATION: u16 = 0x8001;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_ADDRESS: u16 = 0x8002;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_SEND_FAILURE: u16 = 0x8003;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_PEER_ERROR: u16 = 0x8004;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_SHUTDOWN: u16 = 0x8005;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_PARTIAL_DELIVERY: u16 = 0x8006;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_ADAPTATION: u16 = 0x8007;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_AUTHENTICATION: u16 = 0x8008;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_SENDER_DRY: u16 = 0x8009;
+#[cfg(target_os = "linux")]
+const SCTP_EVENT_STREAM_RESET: u16 = 0x800a;
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SctpInitMsgLinux {
+    num_ostreams: u16,
+    max_instreams: u16,
+    max_attempts: u16,
+    max_init_timeout: u16,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SctpSndInfoLinux {
+    stream: u16,
+    flags: u16,
+    ppid: u32,
+    context: u32,
+    assoc_id: i32,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct SctpRcvInfoLinux {
+    stream: u16,
+    ssn: u16,
+    flags: u16,
+    _pad: u16,
+    ppid: u32,
+    tsn: u32,
+    cumtsn: u32,
+    context: u32,
+    assoc_id: i32,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SctpEventLinux {
+    assoc_id: i32,
+    event_type: u16,
+    on: u8,
+    _pad: u8,
+}
+
+#[cfg(target_os = "linux")]
+fn sctp_socket(family: c_int, ty: c_int) -> io::Result<Socket> {
+    let fd = cvt(unsafe { libc::socket(family, ty | libc::SOCK_CLOEXEC, IPPROTO_SCTP_LINUX) })?;
+    Ok(unsafe { Socket::from_raw_fd(fd) })
+}
+
+#[cfg(target_os = "linux")]
+fn pack_sockaddrs(addrs: &[SocketAddr]) -> Vec<u8> {
+    let mut packed = Vec::with_capacity(addrs.len() * size_of::<c::sockaddr_in6>());
+    for addr in addrs {
+        let (sa, len) = socket_addr_to_c(addr);
+        let ptr = (&raw const sa).cast::<u8>();
+        // SAFETY: `sa` is initialized by `socket_addr_to_c` and `len` is its valid byte length.
+        let bytes = unsafe { crate::slice::from_raw_parts(ptr, len as usize) };
+        packed.extend_from_slice(bytes);
+    }
+    packed
+}
+
+#[cfg(target_os = "linux")]
+fn normalize_bound_addrs(addrs: &[SocketAddr], actual_port: u16) -> Vec<SocketAddr> {
+    addrs
+        .iter()
+        .copied()
+        .map(|mut a| {
+            if a.port() == 0 {
+                a.set_port(actual_port);
+            }
+            a
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+pub struct SctpStream {
+    inner: Socket,
+    local_addrs: Vec<SocketAddr>,
+    peer_addrs: Vec<SocketAddr>,
+}
+
+#[cfg(target_os = "linux")]
+impl SctpStream {
+    pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<SctpStream> {
+        init();
+        each_addr(addr, |addr| {
+            let sock = sctp_socket(addr_family(addr), c::SOCK_STREAM)?;
+            sock.connect(addr)?;
+            let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+            Ok(SctpStream { inner: sock, local_addrs: vec![local], peer_addrs: vec![*addr] })
+        })
+    }
+
+    pub fn connect_multi(addrs: &[SocketAddr]) -> io::Result<SctpStream> {
+        init();
+        if addrs.is_empty() {
+            return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
+        }
+
+        let family = addr_family(&addrs[0]);
+        let sock = sctp_socket(family, c::SOCK_STREAM)?;
+        let packed = pack_sockaddrs(addrs);
+
+        let rc = unsafe {
+            c::setsockopt(
+                sock.as_raw(),
+                IPPROTO_SCTP_LINUX,
+                SCTP_SOCKOPT_CONNECTX,
+                packed.as_ptr().cast(),
+                packed.len() as c::socklen_t,
+            )
+        };
+        if rc != 0 {
+            let old_rc = unsafe {
+                c::setsockopt(
+                    sock.as_raw(),
+                    IPPROTO_SCTP_LINUX,
+                    SCTP_SOCKOPT_CONNECTX_OLD,
+                    packed.as_ptr().cast(),
+                    packed.len() as c::socklen_t,
+                )
+            };
+            if old_rc != 0 {
+                sock.connect(&addrs[0])?;
+            }
+        }
+
+        let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+        Ok(SctpStream { inner: sock, local_addrs: vec![local], peer_addrs: addrs.to_vec() })
+    }
+
+    pub fn bind(addr: SocketAddr) -> io::Result<SctpStream> {
+        init();
+        let sock = sctp_socket(addr_family(&addr), c::SOCK_STREAM)?;
+        let (raw, len) = socket_addr_to_c(&addr);
+        cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
+        let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+        Ok(SctpStream { inner: sock, local_addrs: vec![local], peer_addrs: Vec::new() })
+    }
+
+    pub fn bind_multi(addrs: &[SocketAddr]) -> io::Result<SctpStream> {
+        init();
+        if addrs.is_empty() {
+            return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
+        }
+        let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
+        let (raw, len) = socket_addr_to_c(&addrs[0]);
+        cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
+        if addrs.len() > 1 {
+            let packed = pack_sockaddrs(&addrs[1..]);
+            cvt(unsafe {
+                c::setsockopt(
+                    sock.as_raw(),
+                    IPPROTO_SCTP_LINUX,
+                    SCTP_SOCKOPT_BINDX_ADD,
+                    packed.as_ptr().cast(),
+                    packed.len() as c::socklen_t,
+                )
+            })?;
+        }
+        let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+        let normalized = normalize_bound_addrs(addrs, local.port());
+        Ok(SctpStream { inner: sock, local_addrs: normalized, peer_addrs: Vec::new() })
+    }
+
+    pub fn duplicate(&self) -> io::Result<SctpStream> {
+        self.inner.duplicate().map(|s| SctpStream {
+            inner: s,
+            local_addrs: self.local_addrs.clone(),
+            peer_addrs: self.peer_addrs.clone(),
+        })
+    }
+
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.inner.set_timeout(dur, c::SO_RCVTIMEO)
+    }
+
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.inner.set_timeout(dur, c::SO_SNDTIMEO)
+    }
+
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.inner.timeout(c::SO_RCVTIMEO)
+    }
+
+    pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        self.inner.timeout(c::SO_SNDTIMEO)
+    }
+
+    pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+
+    pub fn read_buf(&self, buf: BorrowedCursor<'_>) -> io::Result<()> {
+        self.inner.read_buf(buf)
+    }
+
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        self.inner.read_vectored(bufs)
+    }
+
+    #[inline]
+    pub fn is_read_vectored(&self) -> bool {
+        self.inner.is_read_vectored()
+    }
+
+    pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.send_with_flags(buf, MSG_NOSIGNAL)
+    }
+
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        self.inner.write_vectored(bufs)
+    }
+
+    #[inline]
+    pub fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        unsafe { sockname(|buf, len| c::getpeername(self.inner.as_raw(), buf, len)) }
+    }
+
+    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        unsafe { sockname(|buf, len| c::getsockname(self.inner.as_raw(), buf, len)) }
+    }
+
+    pub fn peer_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        if self.peer_addrs.is_empty() {
+            self.peer_addr().map(|a| vec![a])
+        } else {
+            Ok(self.peer_addrs.clone())
+        }
+    }
+
+    pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        if self.local_addrs.is_empty() {
+            self.socket_addr().map(|a| vec![a])
+        } else {
+            Ok(self.local_addrs.clone())
+        }
+    }
+
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        self.inner.shutdown(how)
+    }
+
+    pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        unsafe {
+            setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_NODELAY, nodelay as c_int)
+        }
+    }
+
+    pub fn set_init_options(&self, opts: crate::net::SctpInitOptions) -> io::Result<()> {
+        let raw = SctpInitMsgLinux {
+            num_ostreams: opts.num_ostreams,
+            max_instreams: opts.max_instreams,
+            max_attempts: opts.max_attempts,
+            max_init_timeout: opts.max_init_timeout,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_INITMSG, raw) }
+    }
+
+    pub fn subscribe_events(&self, mask: crate::net::SctpEventMask) -> io::Result<()> {
+        let events = [
+            (SCTP_EVENT_DATA_IO, mask.data_io),
+            (SCTP_EVENT_ASSOCIATION, mask.association),
+            (SCTP_EVENT_ADDRESS, mask.address),
+            (SCTP_EVENT_SEND_FAILURE, mask.send_failure),
+            (SCTP_EVENT_PEER_ERROR, mask.peer_error),
+            (SCTP_EVENT_SHUTDOWN, mask.shutdown),
+            (SCTP_EVENT_PARTIAL_DELIVERY, mask.partial_delivery),
+            (SCTP_EVENT_ADAPTATION, mask.adaptation),
+            (SCTP_EVENT_AUTHENTICATION, mask.authentication),
+            (SCTP_EVENT_SENDER_DRY, mask.sender_dry),
+            (SCTP_EVENT_STREAM_RESET, mask.stream_reset),
+        ];
+        for (ty, on) in events {
+            let evt = SctpEventLinux { assoc_id: 0, event_type: ty, on: on as u8, _pad: 0 };
+            unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_EVENT, evt) }?;
+        }
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }
+    }
+
+    pub fn send_with_info(
+        &self,
+        buf: &[u8],
+        info: Option<&crate::net::SctpSendInfo>,
+    ) -> io::Result<usize> {
+        use libc::{CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_SPACE};
+
+        let mut iov =
+            [libc::iovec { iov_base: buf.as_ptr().cast_mut().cast(), iov_len: buf.len() }];
+        let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+        msg.msg_iov = (&raw mut iov) as *mut _;
+        msg.msg_iovlen = 1;
+
+        #[repr(C)]
+        union Cmsg {
+            buf: [u8; unsafe { CMSG_SPACE(size_of::<SctpSndInfoLinux>() as u32) as usize }],
+            _align: libc::cmsghdr,
+        }
+        let mut cmsg: Cmsg = unsafe { mem::zeroed() };
+
+        if let Some(info) = info {
+            msg.msg_control = (&raw mut cmsg.buf).cast();
+            msg.msg_controllen = size_of_val(unsafe { &cmsg.buf }) as _;
+            // SAFETY: header/data pointers are valid within `cmsg` for one control message.
+            unsafe {
+                let hdr = CMSG_FIRSTHDR((&raw mut msg) as *mut _);
+                if !hdr.is_null() {
+                    (*hdr).cmsg_level = IPPROTO_SCTP_LINUX;
+                    (*hdr).cmsg_type = SCTP_CMSG_SNDINFO;
+                    (*hdr).cmsg_len = CMSG_LEN(size_of::<SctpSndInfoLinux>() as u32) as _;
+                    let data = CMSG_DATA(hdr).cast::<SctpSndInfoLinux>();
+                    *data = SctpSndInfoLinux {
+                        stream: info.stream,
+                        flags: info.flags,
+                        ppid: info.ppid,
+                        context: info.context,
+                        assoc_id: info.assoc_id,
+                    };
+                }
+            }
+        }
+
+        self.inner.send_msg(&mut msg)
+    }
+
+    pub fn recv_with_info(
+        &self,
+        buf: &mut [u8],
+    ) -> io::Result<(usize, Option<crate::net::SctpRecvInfo>)> {
+        use libc::{CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_NXTHDR, CMSG_SPACE};
+
+        let mut iov = [libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() }];
+        let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+        msg.msg_iov = (&raw mut iov) as *mut _;
+        msg.msg_iovlen = 1;
+
+        #[repr(C)]
+        union Cmsg {
+            buf: [u8; unsafe { CMSG_SPACE(size_of::<SctpRcvInfoLinux>() as u32) as usize }],
+            _align: libc::cmsghdr,
+        }
+        let mut cmsg: Cmsg = unsafe { mem::zeroed() };
+        msg.msg_control = (&raw mut cmsg.buf).cast();
+        msg.msg_controllen = size_of_val(unsafe { &cmsg.buf }) as _;
+
+        let n = self.inner.recv_msg(&mut msg)?;
+        let mut out = None;
+        // SAFETY: iterating kernel-populated control-message chain in `msg`.
+        unsafe {
+            let mut hdr = CMSG_FIRSTHDR((&raw mut msg) as *mut _);
+            while !hdr.is_null() {
+                if (*hdr).cmsg_level == IPPROTO_SCTP_LINUX
+                    && (*hdr).cmsg_type == SCTP_CMSG_RCVINFO
+                    && ((*hdr).cmsg_len as usize)
+                        >= CMSG_LEN(size_of::<SctpRcvInfoLinux>() as u32) as usize
+                {
+                    let data = CMSG_DATA(hdr).cast::<SctpRcvInfoLinux>();
+                    let d = *data;
+                    out = Some(crate::net::SctpRecvInfo {
+                        stream: d.stream,
+                        ssn: d.ssn,
+                        flags: d.flags,
+                        ppid: d.ppid,
+                        tsn: d.tsn,
+                        cumtsn: d.cumtsn,
+                        context: d.context,
+                        assoc_id: d.assoc_id,
+                    });
+                    break;
+                }
+                hdr = CMSG_NXTHDR((&raw mut msg) as *mut _, hdr);
+            }
+        }
+        Ok((n, out))
+    }
+
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        self.inner.take_error()
+    }
+
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.inner.set_nonblocking(nonblocking)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl AsInner<Socket> for SctpStream {
+    #[inline]
+    fn as_inner(&self) -> &Socket {
+        &self.inner
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl FromInner<Socket> for SctpStream {
+    fn from_inner(socket: Socket) -> SctpStream {
+        SctpStream { inner: socket, local_addrs: Vec::new(), peer_addrs: Vec::new() }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl fmt::Debug for SctpStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut res = f.debug_struct("SctpStream");
+        if let Ok(addr) = self.socket_addr() {
+            res.field("addr", &addr);
+        }
+        if let Ok(peer) = self.peer_addr() {
+            res.field("peer", &peer);
+        }
+        res.field("fd", &self.inner.as_raw()).finish()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub struct SctpListener {
+    inner: Socket,
+    local_addrs: Vec<SocketAddr>,
+}
+
+#[cfg(target_os = "linux")]
+impl SctpListener {
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpListener> {
+        init();
+        each_addr(addr, |addr| {
+            let sock = sctp_socket(addr_family(addr), c::SOCK_STREAM)?;
+            unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
+            let (raw, len) = socket_addr_to_c(addr);
+            cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
+            cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
+            let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+            Ok(SctpListener { inner: sock, local_addrs: vec![local] })
+        })
+    }
+
+    pub fn bind_multi(addrs: &[SocketAddr]) -> io::Result<SctpListener> {
+        init();
+        if addrs.is_empty() {
+            return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
+        }
+        let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
+        unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
+        let (raw, len) = socket_addr_to_c(&addrs[0]);
+        cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
+        if addrs.len() > 1 {
+            let packed = pack_sockaddrs(&addrs[1..]);
+            cvt(unsafe {
+                c::setsockopt(
+                    sock.as_raw(),
+                    IPPROTO_SCTP_LINUX,
+                    SCTP_SOCKOPT_BINDX_ADD,
+                    packed.as_ptr().cast(),
+                    packed.len() as c::socklen_t,
+                )
+            })?;
+        }
+        cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
+        let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+        let normalized = normalize_bound_addrs(addrs, local.port());
+        Ok(SctpListener { inner: sock, local_addrs: normalized })
+    }
+
+    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        unsafe { sockname(|buf, len| c::getsockname(self.inner.as_raw(), buf, len)) }
+    }
+
+    pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        if self.local_addrs.is_empty() {
+            self.socket_addr().map(|a| vec![a])
+        } else {
+            Ok(self.local_addrs.clone())
+        }
+    }
+
+    pub fn accept(&self) -> io::Result<(SctpStream, SocketAddr)> {
+        let mut storage = MaybeUninit::<c::sockaddr_storage>::uninit();
+        let mut len = size_of::<c::sockaddr_storage>() as c::socklen_t;
+        let sock = self.inner.accept(storage.as_mut_ptr() as *mut _, &mut len)?;
+        let addr = unsafe { socket_addr_from_c(storage.as_ptr(), len as usize)? };
+        Ok((
+            SctpStream {
+                inner: sock,
+                local_addrs: self.local_addrs.clone(),
+                peer_addrs: vec![addr],
+            },
+            addr,
+        ))
+    }
+
+    pub fn duplicate(&self) -> io::Result<SctpListener> {
+        self.inner
+            .duplicate()
+            .map(|s| SctpListener { inner: s, local_addrs: self.local_addrs.clone() })
+    }
+
+    pub fn set_init_options(&self, opts: crate::net::SctpInitOptions) -> io::Result<()> {
+        let raw = SctpInitMsgLinux {
+            num_ostreams: opts.num_ostreams,
+            max_instreams: opts.max_instreams,
+            max_attempts: opts.max_attempts,
+            max_init_timeout: opts.max_init_timeout,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_INITMSG, raw) }
+    }
+
+    pub fn subscribe_events(&self, mask: crate::net::SctpEventMask) -> io::Result<()> {
+        let events = [
+            (SCTP_EVENT_DATA_IO, mask.data_io),
+            (SCTP_EVENT_ASSOCIATION, mask.association),
+            (SCTP_EVENT_ADDRESS, mask.address),
+            (SCTP_EVENT_SEND_FAILURE, mask.send_failure),
+            (SCTP_EVENT_PEER_ERROR, mask.peer_error),
+            (SCTP_EVENT_SHUTDOWN, mask.shutdown),
+            (SCTP_EVENT_PARTIAL_DELIVERY, mask.partial_delivery),
+            (SCTP_EVENT_ADAPTATION, mask.adaptation),
+            (SCTP_EVENT_AUTHENTICATION, mask.authentication),
+            (SCTP_EVENT_SENDER_DRY, mask.sender_dry),
+            (SCTP_EVENT_STREAM_RESET, mask.stream_reset),
+        ];
+        for (ty, on) in events {
+            let evt = SctpEventLinux { assoc_id: 0, event_type: ty, on: on as u8, _pad: 0 };
+            unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_EVENT, evt) }?;
+        }
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }
+    }
+
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        self.inner.take_error()
+    }
+
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.inner.set_nonblocking(nonblocking)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl FromInner<Socket> for SctpListener {
+    fn from_inner(socket: Socket) -> SctpListener {
+        SctpListener { inner: socket, local_addrs: Vec::new() }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl fmt::Debug for SctpListener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut res = f.debug_struct("SctpListener");
+        if let Ok(addr) = self.socket_addr() {
+            res.field("addr", &addr);
+        }
+        res.field("fd", &self.inner.as_raw()).finish()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn sctp_unsupported<T>() -> io::Result<T> {
+    Err(io::const_error!(io::ErrorKind::Unsupported, "SCTP is not supported on this platform"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub struct SctpStream;
+
+#[cfg(not(target_os = "linux"))]
+impl SctpStream {
+    pub fn connect<A: ToSocketAddrs>(_addr: A) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
+    pub fn connect_multi(_addrs: &[SocketAddr]) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
+    pub fn bind(_addr: SocketAddr) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
+    pub fn bind_multi(_addrs: &[SocketAddr]) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
+    pub fn duplicate(&self) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
+    pub fn set_read_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_write_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        sctp_unsupported()
+    }
+
+    pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        sctp_unsupported()
+    }
+
+    pub fn read(&self, _buf: &mut [u8]) -> io::Result<usize> {
+        sctp_unsupported()
+    }
+
+    pub fn read_buf(&self, _buf: BorrowedCursor<'_>) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn read_vectored(&self, _bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        sctp_unsupported()
+    }
+
+    #[inline]
+    pub fn is_read_vectored(&self) -> bool {
+        false
+    }
+
+    pub fn write(&self, _buf: &[u8]) -> io::Result<usize> {
+        sctp_unsupported()
+    }
+
+    pub fn write_vectored(&self, _bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        sctp_unsupported()
+    }
+
+    #[inline]
+    pub fn is_write_vectored(&self) -> bool {
+        false
+    }
+
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        sctp_unsupported()
+    }
+
+    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        sctp_unsupported()
+    }
+
+    pub fn peer_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        sctp_unsupported()
+    }
+
+    pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        sctp_unsupported()
+    }
+
+    pub fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_init_options(&self, _opts: crate::net::SctpInitOptions) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn subscribe_events(&self, _mask: crate::net::SctpEventMask) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn send_with_info(
+        &self,
+        _buf: &[u8],
+        _info: Option<&crate::net::SctpSendInfo>,
+    ) -> io::Result<usize> {
+        sctp_unsupported()
+    }
+
+    pub fn recv_with_info(
+        &self,
+        _buf: &mut [u8],
+    ) -> io::Result<(usize, Option<crate::net::SctpRecvInfo>)> {
+        sctp_unsupported()
+    }
+
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        sctp_unsupported()
+    }
+
+    pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {
+        sctp_unsupported()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl fmt::Debug for SctpStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SctpStream").finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub struct SctpListener;
+
+#[cfg(not(target_os = "linux"))]
+impl SctpListener {
+    pub fn bind<A: ToSocketAddrs>(_addr: A) -> io::Result<SctpListener> {
+        sctp_unsupported()
+    }
+
+    pub fn bind_multi(_addrs: &[SocketAddr]) -> io::Result<SctpListener> {
+        sctp_unsupported()
+    }
+
+    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        sctp_unsupported()
+    }
+
+    pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        sctp_unsupported()
+    }
+
+    pub fn accept(&self) -> io::Result<(SctpStream, SocketAddr)> {
+        sctp_unsupported()
+    }
+
+    pub fn duplicate(&self) -> io::Result<SctpListener> {
+        sctp_unsupported()
+    }
+
+    pub fn set_init_options(&self, _opts: crate::net::SctpInitOptions) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn subscribe_events(&self, _mask: crate::net::SctpEventMask) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        sctp_unsupported()
+    }
+
+    pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {
+        sctp_unsupported()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl fmt::Debug for SctpListener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SctpListener").finish_non_exhaustive()
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -8,6 +8,8 @@
 //!
 //! * [`TcpListener`] and [`TcpStream`] provide functionality for communication over TCP
 //! * [`UdpSocket`] provides functionality for communication over UDP
+//! * [`SctpListener`] and [`SctpStream`] provide functionality for communication over SCTP on
+//!   Linux when the `sctp` feature is enabled
 //! * [`IpAddr`] represents IP addresses of either IPv4 or IPv6; [`Ipv4Addr`] and
 //!   [`Ipv6Addr`] are respectively IPv4 and IPv6 addresses
 //! * [`SocketAddr`] represents socket addresses of either IPv4 or IPv6; [`SocketAddrV4`]
@@ -29,6 +31,11 @@ pub use core::net::AddrParseError;
 pub use self::hostname::hostname;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::ip_addr::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
+#[unstable(feature = "sctp", issue = "none")]
+pub use self::sctp::{
+    SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr, SctpRecvInfo, SctpSendInfo,
+    SctpStream,
+};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::socket_addr::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 #[unstable(feature = "tcplistener_into_incoming", issue = "88373")]
@@ -40,6 +47,7 @@ pub use self::udp::UdpSocket;
 
 mod hostname;
 mod ip_addr;
+mod sctp;
 mod socket_addr;
 mod tcp;
 #[cfg(test)]
