@@ -6,7 +6,7 @@ use std::env;
 use std::io::{self, Write};
 use std::net::{
     AddrParseError, SocketAddr, SctpInitOptions, SctpListener, SctpMultiAddr, SctpSendInfo,
-    SctpStream,
+    SctpSocket, SctpStream,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -673,11 +673,11 @@ fn handle_autoclose(
     _contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let stream = SctpStream::bind(addr).map_err(io_string)?;
-    stream.set_autoclose(5).map_err(io_string)?;
+    let socket = SctpSocket::bind(addr).map_err(io_string)?;
+    socket.set_autoclose(5).map_err(io_string)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
-        evidence_text: "applied SCTP_AUTOCLOSE=5 on a locally bound socket".to_owned(),
+        evidence_text: "applied SCTP_AUTOCLOSE=5 on a locally bound one-to-many socket".to_owned(),
         report_text: "rust-sctp accepted SCTP_AUTOCLOSE".to_owned(),
     }))
 }
