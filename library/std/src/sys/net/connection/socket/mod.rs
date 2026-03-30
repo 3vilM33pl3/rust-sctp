@@ -366,7 +366,19 @@ const SCTP_SOCKOPT_INITMSG: c_int = 2;
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_NODELAY: c_int = 3;
 #[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_AUTOCLOSE: c_int = 4;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_RTOINFO: c_int = 0;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_MAXSEG: c_int = 13;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_DELAYED_SACK: c_int = 16;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_MAX_BURST: c_int = 20;
+#[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_RECVRCVINFO: c_int = 32;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_DEFAULT_SNDINFO: c_int = 34;
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_EVENT: c_int = 127;
 #[cfg(target_os = "linux")]
@@ -424,6 +436,23 @@ struct SctpSndInfoLinux {
 
 #[cfg(target_os = "linux")]
 #[repr(C)]
+struct SctpRtoInfoLinux {
+    assoc_id: i32,
+    initial: u32,
+    max: u32,
+    min: u32,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SctpDelayedSackInfoLinux {
+    assoc_id: i32,
+    delay: u32,
+    frequency: u32,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
 #[derive(Copy, Clone)]
 struct SctpRcvInfoLinux {
     stream: u16,
@@ -444,6 +473,13 @@ struct SctpEventLinux {
     event_type: u16,
     on: u8,
     _pad: u8,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SctpAssocValueLinux {
+    assoc_id: i32,
+    value: u32,
 }
 
 #[cfg(target_os = "linux")]
@@ -498,6 +534,29 @@ impl SctpStream {
         })
     }
 
+    pub fn connect_with_init_options<A: ToSocketAddrs>(
+        addr: A,
+        opts: crate::net::SctpInitOptions,
+    ) -> io::Result<SctpStream> {
+        init();
+        each_addr(addr, |addr| {
+            let sock = sctp_socket(addr_family(addr), c::SOCK_STREAM)?;
+            let raw = SctpInitMsgLinux {
+                num_ostreams: opts.num_ostreams,
+                max_instreams: opts.max_instreams,
+                max_attempts: opts.max_attempts,
+                max_init_timeout: opts.max_init_timeout,
+            };
+            unsafe { setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_INITMSG, raw) }?;
+            unsafe {
+                setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
+            }?;
+            sock.connect(addr)?;
+            let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+            Ok(SctpStream { inner: sock, local_addrs: vec![local], peer_addrs: vec![*addr] })
+        })
+    }
+
     pub fn connect_multi(addrs: &[SocketAddr]) -> io::Result<SctpStream> {
         init();
         if addrs.is_empty() {
@@ -506,6 +565,55 @@ impl SctpStream {
 
         let family = addr_family(&addrs[0]);
         let sock = sctp_socket(family, c::SOCK_STREAM)?;
+        let packed = pack_sockaddrs(addrs);
+
+        let rc = unsafe {
+            c::setsockopt(
+                sock.as_raw(),
+                IPPROTO_SCTP_LINUX,
+                SCTP_SOCKOPT_CONNECTX,
+                packed.as_ptr().cast(),
+                packed.len() as c::socklen_t,
+            )
+        };
+        if rc != 0 {
+            let old_rc = unsafe {
+                c::setsockopt(
+                    sock.as_raw(),
+                    IPPROTO_SCTP_LINUX,
+                    SCTP_SOCKOPT_CONNECTX_OLD,
+                    packed.as_ptr().cast(),
+                    packed.len() as c::socklen_t,
+                )
+            };
+            if old_rc != 0 {
+                sock.connect(&addrs[0])?;
+            }
+        }
+
+        let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
+        Ok(SctpStream { inner: sock, local_addrs: vec![local], peer_addrs: addrs.to_vec() })
+    }
+
+    pub fn connect_multi_with_init_options(
+        addrs: &[SocketAddr],
+        opts: crate::net::SctpInitOptions,
+    ) -> io::Result<SctpStream> {
+        init();
+        if addrs.is_empty() {
+            return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
+        }
+
+        let family = addr_family(&addrs[0]);
+        let sock = sctp_socket(family, c::SOCK_STREAM)?;
+        let raw = SctpInitMsgLinux {
+            num_ostreams: opts.num_ostreams,
+            max_instreams: opts.max_instreams,
+            max_attempts: opts.max_attempts,
+            max_init_timeout: opts.max_init_timeout,
+        };
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_INITMSG, raw) }?;
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let packed = pack_sockaddrs(addrs);
 
         let rc = unsafe {
@@ -687,6 +795,49 @@ impl SctpStream {
             unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_EVENT, evt) }?;
         }
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }
+    }
+
+    pub fn set_rto_info(&self, info: crate::net::SctpRtoInfo) -> io::Result<()> {
+        let raw = SctpRtoInfoLinux {
+            assoc_id: info.assoc_id,
+            initial: info.initial,
+            max: info.max,
+            min: info.min,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RTOINFO, raw) }
+    }
+
+    pub fn set_delayed_sack(&self, info: crate::net::SctpDelayedSackInfo) -> io::Result<()> {
+        let raw = SctpDelayedSackInfoLinux {
+            assoc_id: info.assoc_id,
+            delay: info.delay,
+            frequency: info.frequency,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_DELAYED_SACK, raw) }
+    }
+
+    pub fn set_default_send_info(&self, info: crate::net::SctpSendInfo) -> io::Result<()> {
+        let raw = SctpSndInfoLinux {
+            stream: info.stream,
+            flags: info.flags,
+            ppid: info.ppid,
+            context: info.context,
+            assoc_id: info.assoc_id,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_DEFAULT_SNDINFO, raw) }
+    }
+
+    pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_AUTOCLOSE, seconds) }
+    }
+
+    pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
+        let raw = SctpAssocValueLinux { assoc_id: 0, value };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_MAX_BURST, raw) }
+    }
+
+    pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_MAXSEG, value) }
     }
 
     pub fn send_with_info(
@@ -935,6 +1086,34 @@ impl SctpListener {
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }
     }
 
+    pub fn set_rto_info(&self, info: crate::net::SctpRtoInfo) -> io::Result<()> {
+        let raw = SctpRtoInfoLinux {
+            assoc_id: info.assoc_id,
+            initial: info.initial,
+            max: info.max,
+            min: info.min,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RTOINFO, raw) }
+    }
+
+    pub fn set_delayed_sack(&self, info: crate::net::SctpDelayedSackInfo) -> io::Result<()> {
+        let raw = SctpDelayedSackInfoLinux {
+            assoc_id: info.assoc_id,
+            delay: info.delay,
+            frequency: info.frequency,
+        };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_DELAYED_SACK, raw) }
+    }
+
+    pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
+        let raw = SctpAssocValueLinux { assoc_id: 0, value };
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_MAX_BURST, raw) }
+    }
+
+    pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
+        unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_MAXSEG, value) }
+    }
+
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.inner.take_error()
     }
@@ -977,7 +1156,21 @@ impl SctpStream {
         sctp_unsupported()
     }
 
+    pub fn connect_with_init_options<A: ToSocketAddrs>(
+        _addr: A,
+        _opts: crate::net::SctpInitOptions,
+    ) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
     pub fn connect_multi(_addrs: &[SocketAddr]) -> io::Result<SctpStream> {
+        sctp_unsupported()
+    }
+
+    pub fn connect_multi_with_init_options(
+        _addrs: &[SocketAddr],
+        _opts: crate::net::SctpInitOptions,
+    ) -> io::Result<SctpStream> {
         sctp_unsupported()
     }
 
@@ -1071,6 +1264,30 @@ impl SctpStream {
         sctp_unsupported()
     }
 
+    pub fn set_rto_info(&self, _info: crate::net::SctpRtoInfo) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_delayed_sack(&self, _info: crate::net::SctpDelayedSackInfo) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_default_send_info(&self, _info: crate::net::SctpSendInfo) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_autoclose(&self, _seconds: u32) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_max_burst(&self, _value: u32) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_maxseg(&self, _value: u32) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
     pub fn send_with_info(
         &self,
         _buf: &[u8],
@@ -1136,6 +1353,22 @@ impl SctpListener {
     }
 
     pub fn subscribe_events(&self, _mask: crate::net::SctpEventMask) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_rto_info(&self, _info: crate::net::SctpRtoInfo) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_delayed_sack(&self, _info: crate::net::SctpDelayedSackInfo) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_max_burst(&self, _value: u32) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_maxseg(&self, _value: u32) -> io::Result<()> {
         sctp_unsupported()
     }
 

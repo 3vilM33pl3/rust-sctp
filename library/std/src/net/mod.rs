@@ -33,8 +33,8 @@ pub use self::hostname::hostname;
 pub use self::ip_addr::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
 #[unstable(feature = "sctp", issue = "none")]
 pub use self::sctp::{
-    SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr, SctpRecvInfo, SctpSendInfo,
-    SctpStream,
+    SctpDelayedSackInfo, SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr,
+    SctpRecvInfo, SctpRtoInfo, SctpSendInfo, SctpStream,
 };
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::socket_addr::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
-use std::io;
+use std::io::{self, Write};
 use std::net::{
     AddrParseError, SocketAddr, SctpInitOptions, SctpListener, SctpMultiAddr, SctpSendInfo,
     SctpStream,
@@ -116,15 +116,33 @@ struct ScenarioContract {
     completion_mode: String,
     transport: String,
     connect_addresses: Vec<String>,
+    #[serde(default)]
+    client_socket_options: Vec<String>,
+    #[serde(default)]
+    client_subscriptions: Vec<String>,
     client_send_messages: Vec<MessageSpec>,
     server_send_messages: Vec<MessageSpec>,
     trigger_payload: String,
     negative_connect_target: String,
     timeout_seconds: i32,
     manual_setup_required: bool,
+    #[serde(default)]
+    socket_tuning: Option<SocketTuning>,
     manual_setup_instructions: Vec<String>,
     report_prompt: String,
     instructions_text: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct SocketTuning {
+    #[serde(default)]
+    delayed_sack_delay_ms: u32,
+    #[serde(default)]
+    delayed_sack_freq: u32,
+    #[serde(default)]
+    max_burst: u32,
+    #[serde(default)]
+    maxseg: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -524,6 +542,146 @@ fn handle_initmsg(
     }))
 }
 
+fn handle_rto_info(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    let info = std::net::SctpRtoInfo { assoc_id: 0, initial: 1500, max: 4000, min: 800 };
+    stream.set_rto_info(info).map_err(io_string)?;
+    send_contract_messages(&stream, &contract.client_send_messages)?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "socket_option".to_owned(),
+        evidence_text: format!(
+            "applied SCTP_RTOINFO initial={} max={} min={}",
+            info.initial, info.max, info.min
+        ),
+        report_text: "rust-sctp accepted SCTP_RTOINFO".to_owned(),
+    }))
+}
+
+fn handle_delayed_sack(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    let tuning = contract
+        .socket_tuning
+        .as_ref()
+        .ok_or_else(|| format!("feature {} did not provide socket_tuning", contract.feature_id))?;
+    let info = std::net::SctpDelayedSackInfo {
+        assoc_id: 0,
+        delay: tuning.delayed_sack_delay_ms,
+        frequency: tuning.delayed_sack_freq,
+    };
+    stream.set_delayed_sack(info).map_err(io_string)?;
+    send_contract_messages(&stream, &contract.client_send_messages)?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "socket_option".to_owned(),
+        evidence_text: format!(
+            "applied SCTP_DELAYED_SACK delay_ms={} freq={}",
+            info.delay, info.frequency
+        ),
+        report_text: "rust-sctp accepted SCTP_DELAYED_SACK".to_owned(),
+    }))
+}
+
+fn handle_max_burst(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    let tuning = contract
+        .socket_tuning
+        .as_ref()
+        .ok_or_else(|| format!("feature {} did not provide socket_tuning", contract.feature_id))?;
+    if tuning.max_burst == 0 {
+        return Err(format!("feature {} did not provide socket_tuning.max_burst", contract.feature_id));
+    }
+    stream.set_max_burst(tuning.max_burst).map_err(io_string)?;
+    send_contract_messages(&stream, &contract.client_send_messages)?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "socket_option".to_owned(),
+        evidence_text: format!("applied SCTP_MAX_BURST={}", tuning.max_burst),
+        report_text: "rust-sctp accepted SCTP_MAX_BURST".to_owned(),
+    }))
+}
+
+fn handle_default_send_info(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let mut stream = dial_contract(contract)?;
+    write_contract_messages_with_default_info(&mut stream, &contract.client_send_messages)?;
+    let msg = contract
+        .client_send_messages
+        .first()
+        .ok_or_else(|| format!("feature {} did not provide any client_send_messages", contract.feature_id))?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "socket_option".to_owned(),
+        evidence_text: format!("applied SCTP_DEFAULT_SNDINFO stream={} ppid={}", msg.stream, msg.ppid),
+        report_text: "rust-sctp accepted SCTP_DEFAULT_SNDINFO".to_owned(),
+    }))
+}
+
+fn handle_large_message_reassembly(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let mut stream = dial_contract(contract)?;
+    write_contract_messages_with_default_info(&mut stream, &contract.client_send_messages)?;
+    Ok(None)
+}
+
+fn handle_maxseg_fragmentation(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let mut stream = dial_contract(contract)?;
+    let tuning = contract
+        .socket_tuning
+        .as_ref()
+        .ok_or_else(|| format!("feature {} did not provide socket_tuning", contract.feature_id))?;
+    if tuning.maxseg == 0 {
+        return Err(format!("feature {} did not provide socket_tuning.maxseg", contract.feature_id));
+    }
+    stream.set_maxseg(tuning.maxseg).map_err(io_string)?;
+    write_contract_messages_with_default_info(&mut stream, &contract.client_send_messages)?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "socket_option".to_owned(),
+        evidence_text: format!("applied SCTP_MAXSEG={}", tuning.maxseg),
+        report_text: "rust-sctp accepted SCTP_MAXSEG".to_owned(),
+    }))
+}
+
+fn handle_autoclose(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    _contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let stream = SctpStream::bind(addr).map_err(io_string)?;
+    stream.set_autoclose(5).map_err(io_string)?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "socket_option".to_owned(),
+        evidence_text: "applied SCTP_AUTOCLOSE=5 on a locally bound socket".to_owned(),
+        report_text: "rust-sctp accepted SCTP_AUTOCLOSE".to_owned(),
+    }))
+}
+
 fn handle_multi_bind(
     _client: &FeatureServerClient,
     _session: &SessionResponse,
@@ -623,11 +781,12 @@ fn dial_contract(contract: &ScenarioContract) -> Result<SctpStream, String> {
     if addrs.is_empty() {
         return Err("contract did not include any SCTP connect addresses".to_owned());
     }
+    let init = SctpInitOptions { num_ostreams: 32, max_instreams: 32, ..SctpInitOptions::default() };
     if addrs.len() == 1 {
-        SctpStream::connect(addrs[0]).map_err(io_string)
+        SctpStream::connect_with_init_options(addrs[0], init).map_err(io_string)
     } else {
         let multi = SctpMultiAddr::new(addrs).map_err(io_string)?;
-        SctpStream::connect_multi(&multi).map_err(io_string)
+        SctpStream::connect_multi_with_init_options(&multi, init).map_err(io_string)
     }
 }
 
@@ -656,6 +815,28 @@ fn send_contract_messages(stream: &SctpStream, messages: &[MessageSpec]) -> Resu
                 payload.len()
             ));
         }
+    }
+    Ok(())
+}
+
+fn write_contract_messages_with_default_info(
+    stream: &mut SctpStream,
+    messages: &[MessageSpec],
+) -> Result<(), String> {
+    for msg in messages {
+        if msg.unordered {
+            return Err("unordered delivery requires per-message send flags".to_owned());
+        }
+        let info = SctpSendInfo {
+            stream: msg.stream,
+            flags: 0,
+            ppid: msg.ppid,
+            context: 0,
+            assoc_id: 0,
+        };
+        stream.set_default_send_info(info).map_err(io_string)?;
+        let payload = materialize_payload(msg);
+        stream.write_all(payload.as_bytes()).map_err(io_string)?;
     }
     Ok(())
 }
@@ -785,24 +966,6 @@ fn scenario_catalog() -> &'static [ScenarioDefinition] {
             handler: handle_basic_send,
         },
         ScenarioDefinition {
-            feature_id: "stream_id",
-            dashboard_title: "Stream identifier metadata",
-            dashboard_category: "metadata",
-            implementation_key: "basic_send",
-            source_symbol: "handle_basic_send",
-            description: "Send the contract payload on the requested SCTP stream.",
-            handler: handle_basic_send,
-        },
-        ScenarioDefinition {
-            feature_id: "ppid",
-            dashboard_title: "PPID metadata",
-            dashboard_category: "metadata",
-            implementation_key: "basic_send",
-            source_symbol: "handle_basic_send",
-            description: "Send the contract payload with the requested SCTP PPID.",
-            handler: handle_basic_send,
-        },
-        ScenarioDefinition {
             feature_id: "nodelay",
             dashboard_title: "SCTP_NODELAY",
             dashboard_category: "socket_option",
@@ -819,6 +982,33 @@ fn scenario_catalog() -> &'static [ScenarioDefinition] {
             source_symbol: "handle_initmsg",
             description: "Apply SCTP_INITMSG before sending the contract payload.",
             handler: handle_initmsg,
+        },
+        ScenarioDefinition {
+            feature_id: "rto_assoc_parameters",
+            dashboard_title: "SCTP_RTOINFO",
+            dashboard_category: "socket_option",
+            implementation_key: "rto_info",
+            source_symbol: "handle_rto_info",
+            description: "Apply SCTP_RTOINFO before sending the contract payload.",
+            handler: handle_rto_info,
+        },
+        ScenarioDefinition {
+            feature_id: "delayed_sack_tuning",
+            dashboard_title: "SCTP_DELAYED_SACK",
+            dashboard_category: "socket_option",
+            implementation_key: "delayed_sack",
+            source_symbol: "handle_delayed_sack",
+            description: "Apply SCTP_DELAYED_SACK before sending the contract payload.",
+            handler: handle_delayed_sack,
+        },
+        ScenarioDefinition {
+            feature_id: "max_burst_tuning",
+            dashboard_title: "SCTP_MAX_BURST",
+            dashboard_category: "socket_option",
+            implementation_key: "max_burst",
+            source_symbol: "handle_max_burst",
+            description: "Apply SCTP_MAX_BURST before sending the contract payload.",
+            handler: handle_max_burst,
         },
         ScenarioDefinition {
             feature_id: "multi_bind",
@@ -848,13 +1038,31 @@ fn scenario_catalog() -> &'static [ScenarioDefinition] {
             handler: handle_peer_addr_enum,
         },
         ScenarioDefinition {
+            feature_id: "default_sndinfo_recvrcvinfo",
+            dashboard_title: "SCTP_DEFAULT_SNDINFO / RECVRCVINFO",
+            dashboard_category: "metadata",
+            implementation_key: "default_send_info",
+            source_symbol: "handle_default_send_info",
+            description: "Apply SCTP_DEFAULT_SNDINFO and send without per-message overrides.",
+            handler: handle_default_send_info,
+        },
+        ScenarioDefinition {
             feature_id: "large_message_reassembly",
             dashboard_title: "Large message reassembly",
             dashboard_category: "fragmentation",
-            implementation_key: "basic_send",
-            source_symbol: "handle_basic_send",
-            description: "Send one large SCTP user message and let the server verify reassembly.",
-            handler: handle_basic_send,
+            implementation_key: "large_message_reassembly",
+            source_symbol: "handle_large_message_reassembly",
+            description: "Send one large SCTP user message using default metadata and let the server verify reassembly.",
+            handler: handle_large_message_reassembly,
+        },
+        ScenarioDefinition {
+            feature_id: "maxseg_fragmentation",
+            dashboard_title: "SCTP_MAXSEG fragmentation",
+            dashboard_category: "fragmentation",
+            implementation_key: "maxseg_fragmentation",
+            source_symbol: "handle_maxseg_fragmentation",
+            description: "Apply SCTP_MAXSEG and send one large SCTP user message.",
+            handler: handle_maxseg_fragmentation,
         },
         ScenarioDefinition {
             feature_id: "unordered_delivery",
@@ -873,6 +1081,15 @@ fn scenario_catalog() -> &'static [ScenarioDefinition] {
             source_symbol: "handle_negative_connect_error",
             description: "Attempt the invalid SCTP target from the contract and report the error.",
             handler: handle_negative_connect_error,
+        },
+        ScenarioDefinition {
+            feature_id: "autoclose",
+            dashboard_title: "SCTP_AUTOCLOSE",
+            dashboard_category: "socket_option",
+            implementation_key: "autoclose",
+            source_symbol: "handle_autoclose",
+            description: "Apply SCTP_AUTOCLOSE on a locally bound SCTP socket and report whether it is accepted.",
+            handler: handle_autoclose,
         },
         ScenarioDefinition {
             feature_id: "notifications",
