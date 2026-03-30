@@ -175,6 +175,10 @@ pub struct SctpStream(net_imp::SctpStream);
 #[unstable(feature = "sctp", issue = "none")]
 pub struct SctpListener(net_imp::SctpListener);
 
+/// An unconnected one-to-many SCTP socket.
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpSocket(net_imp::SctpSocket);
+
 /// Iterator over incoming SCTP streams.
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 #[derive(Debug)]
@@ -454,6 +458,59 @@ impl SctpListener {
 }
 
 #[unstable(feature = "sctp", issue = "none")]
+impl SctpSocket {
+    /// Creates an unconnected SCTP socket bound to one local address.
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpSocket> {
+        net_imp::SctpSocket::bind(addr).map(SctpSocket)
+    }
+
+    /// Creates an unconnected SCTP socket bound to multiple local addresses.
+    pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpSocket> {
+        net_imp::SctpSocket::bind_multi(local.addrs()).map(SctpSocket)
+    }
+
+    /// Returns all local addresses configured for this socket.
+    pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        self.0.local_addrs()
+    }
+
+    /// Configures association setup options applied to future associations.
+    pub fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
+        self.0.set_init_options(opts)
+    }
+
+    /// Subscribes to SCTP socket events.
+    pub fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
+        self.0.subscribe_events(mask)
+    }
+
+    /// Configures the SCTP_AUTOCLOSE timeout in seconds.
+    pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        self.0.set_autoclose(seconds)
+    }
+
+    /// Sends one SCTP user message to a peer address and optional SCTP metadata.
+    pub fn send_to_with_info(
+        &self,
+        buf: &[u8],
+        addr: SocketAddr,
+        info: Option<&SctpSendInfo>,
+    ) -> io::Result<usize> {
+        self.0.send_to_with_info(buf, addr, info)
+    }
+
+    /// Moves this socket into or out of nonblocking mode.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
+    }
+
+    /// Creates a new independently owned handle to the same SCTP socket.
+    pub fn try_clone(&self) -> io::Result<SctpSocket> {
+        self.0.duplicate().map(SctpSocket)
+    }
+}
+
+#[unstable(feature = "sctp", issue = "none")]
 impl<'a> Iterator for SctpIncoming<'a> {
     type Item = io::Result<SctpStream>;
 
@@ -501,6 +558,24 @@ impl IntoInner<net_imp::SctpListener> for SctpListener {
     }
 }
 
+impl AsInner<net_imp::SctpSocket> for SctpSocket {
+    fn as_inner(&self) -> &net_imp::SctpSocket {
+        &self.0
+    }
+}
+
+impl FromInner<net_imp::SctpSocket> for SctpSocket {
+    fn from_inner(inner: net_imp::SctpSocket) -> Self {
+        Self(inner)
+    }
+}
+
+impl IntoInner<net_imp::SctpSocket> for SctpSocket {
+    fn into_inner(self) -> net_imp::SctpSocket {
+        self.0
+    }
+}
+
 #[unstable(feature = "sctp", issue = "none")]
 impl fmt::Debug for SctpStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -510,6 +585,13 @@ impl fmt::Debug for SctpStream {
 
 #[unstable(feature = "sctp", issue = "none")]
 impl fmt::Debug for SctpListener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[unstable(feature = "sctp", issue = "none")]
+impl fmt::Debug for SctpSocket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
