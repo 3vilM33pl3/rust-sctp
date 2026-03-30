@@ -49,6 +49,32 @@ pub struct SctpSendInfo {
     pub assoc_id: i32,
 }
 
+/// SCTP association retransmission timeout parameters.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpRtoInfo {
+    /// Target association identifier (0 for current association).
+    pub assoc_id: i32,
+    /// Initial retransmission timeout in milliseconds.
+    pub initial: u32,
+    /// Maximum retransmission timeout in milliseconds.
+    pub max: u32,
+    /// Minimum retransmission timeout in milliseconds.
+    pub min: u32,
+}
+
+/// SCTP delayed-SACK parameters.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpDelayedSackInfo {
+    /// Target association identifier (0 for current association).
+    pub assoc_id: i32,
+    /// Delay timer in milliseconds.
+    pub delay: u32,
+    /// Acknowledge at least every N packets.
+    pub frequency: u32,
+}
+
 /// Per-message SCTP receive metadata.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[unstable(feature = "sctp", issue = "none")]
@@ -164,9 +190,25 @@ impl SctpStream {
         net_imp::SctpStream::connect(addr).map(SctpStream)
     }
 
+    /// Connects to a single remote SCTP endpoint after applying `SCTP_INITMSG`.
+    pub fn connect_with_init_options<A: ToSocketAddrs>(
+        addr: A,
+        opts: SctpInitOptions,
+    ) -> io::Result<SctpStream> {
+        net_imp::SctpStream::connect_with_init_options(addr, opts).map(SctpStream)
+    }
+
     /// Connects to a remote SCTP endpoint represented by multiple peer addresses.
     pub fn connect_multi(remote: &SctpMultiAddr) -> io::Result<SctpStream> {
         net_imp::SctpStream::connect_multi(remote.addrs()).map(SctpStream)
+    }
+
+    /// Connects to a remote multi-address SCTP endpoint after applying `SCTP_INITMSG`.
+    pub fn connect_multi_with_init_options(
+        remote: &SctpMultiAddr,
+        opts: SctpInitOptions,
+    ) -> io::Result<SctpStream> {
+        net_imp::SctpStream::connect_multi_with_init_options(remote.addrs(), opts).map(SctpStream)
     }
 
     /// Creates an SCTP socket bound to a single local address.
@@ -217,6 +259,36 @@ impl SctpStream {
     /// Sends one user message and optional SCTP per-message metadata.
     pub fn send_with_info(&self, buf: &[u8], info: Option<&SctpSendInfo>) -> io::Result<usize> {
         self.0.send_with_info(buf, info)
+    }
+
+    /// Configures retransmission timeout parameters on this socket or association.
+    pub fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
+        self.0.set_rto_info(info)
+    }
+
+    /// Configures delayed-SACK behavior on this socket or association.
+    pub fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
+        self.0.set_delayed_sack(info)
+    }
+
+    /// Configures the default per-message send metadata used by plain writes.
+    pub fn set_default_send_info(&self, info: SctpSendInfo) -> io::Result<()> {
+        self.0.set_default_send_info(info)
+    }
+
+    /// Configures the SCTP_AUTOCLOSE timeout in seconds.
+    pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        self.0.set_autoclose(seconds)
+    }
+
+    /// Configures the maximum number of back-to-back packets sent by the stack.
+    pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
+        self.0.set_max_burst(value)
+    }
+
+    /// Configures the SCTP_MAXSEG send fragmentation threshold.
+    pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
+        self.0.set_maxseg(value)
     }
 
     /// Receives one user message and optional SCTP receive metadata.
@@ -338,6 +410,26 @@ impl SctpListener {
     /// Subscribes to SCTP socket events.
     pub fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         self.0.subscribe_events(mask)
+    }
+
+    /// Configures association setup options applied to future accepted sockets.
+    pub fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
+        self.0.set_rto_info(info)
+    }
+
+    /// Configures delayed-SACK behavior on this listener socket.
+    pub fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
+        self.0.set_delayed_sack(info)
+    }
+
+    /// Configures the maximum number of back-to-back packets sent by the stack.
+    pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
+        self.0.set_max_burst(value)
+    }
+
+    /// Configures the SCTP_MAXSEG send fragmentation threshold.
+    pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
+        self.0.set_maxseg(value)
     }
 
     /// Moves this listener into or out of nonblocking mode.
