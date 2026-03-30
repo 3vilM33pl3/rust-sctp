@@ -75,6 +75,22 @@ pub struct SctpDelayedSackInfo {
     pub frequency: u32,
 }
 
+/// Metadata describing the next queued SCTP message, if available.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpNextInfo {
+    /// Stream identifier of the next message.
+    pub stream: u16,
+    /// SCTP receive flags for the next message.
+    pub flags: u16,
+    /// Upper-layer payload protocol identifier of the next message.
+    pub ppid: u32,
+    /// Byte length of the next message.
+    pub length: u32,
+    /// Association identifier for the next message.
+    pub assoc_id: i32,
+}
+
 /// Per-message SCTP receive metadata.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[unstable(feature = "sctp", issue = "none")]
@@ -95,6 +111,8 @@ pub struct SctpRecvInfo {
     pub context: u32,
     /// Association identifier for the received message.
     pub assoc_id: i32,
+    /// Metadata for the next queued SCTP message, if the stack made it available.
+    pub next: Option<SctpNextInfo>,
 }
 
 /// SCTP event subscription mask.
@@ -123,6 +141,68 @@ pub struct SctpEventMask {
     pub sender_dry: bool,
     /// Subscribe to stream-reset notifications.
     pub stream_reset: bool,
+}
+
+/// A typed SCTP notification delivered via `recvmsg()`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+#[non_exhaustive]
+pub enum SctpNotification {
+    /// Association state changed.
+    AssociationChange {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// New association state reported by the stack.
+        state: u16,
+        /// Notification-specific error code.
+        error: u16,
+        /// Outbound stream count currently configured for the association.
+        outbound_streams: u16,
+        /// Inbound stream count currently configured for the association.
+        inbound_streams: u16,
+    },
+    /// Peer address state changed on a multihomed association.
+    PeerAddressChange {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Peer address whose state changed.
+        address: SocketAddr,
+        /// New peer-address state reported by the stack.
+        state: u32,
+        /// Notification-specific error code.
+        error: u32,
+    },
+    /// The peer initiated graceful shutdown.
+    Shutdown {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+    },
+    /// Partial delivery state changed while receiving a large user message.
+    PartialDelivery {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Partial-delivery indication value from the stack.
+        indication: u32,
+    },
+    /// A notification the runtime does not parse yet.
+    Unknown {
+        /// Raw SCTP notification type.
+        notification_type: u16,
+        /// Association identifier if it could be derived from the payload.
+        assoc_id: Option<i32>,
+    },
+}
+
+/// Result of receiving one SCTP message or notification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpReceive {
+    /// Number of payload bytes written into the provided buffer.
+    pub len: usize,
+    /// Per-message receive metadata for user data messages.
+    pub info: Option<SctpRecvInfo>,
+    /// Typed SCTP notification metadata when the received payload is a notification.
+    pub notification: Option<SctpNotification>,
 }
 
 /// A validated SCTP multi-address endpoint.
@@ -280,6 +360,16 @@ impl SctpStream {
         self.0.set_default_send_info(info)
     }
 
+    /// Controls whether the kernel returns metadata for the next queued SCTP message.
+    pub fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
+        self.0.set_recv_nxtinfo(on)
+    }
+
+    /// Controls receive-side fragment interleaving behavior.
+    pub fn set_fragment_interleave(&self, level: u32) -> io::Result<()> {
+        self.0.set_fragment_interleave(level)
+    }
+
     /// Configures the SCTP_AUTOCLOSE timeout in seconds.
     pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
         self.0.set_autoclose(seconds)
@@ -298,6 +388,11 @@ impl SctpStream {
     /// Receives one user message and optional SCTP receive metadata.
     pub fn recv_with_info(&self, buf: &mut [u8]) -> io::Result<(usize, Option<SctpRecvInfo>)> {
         self.0.recv_with_info(buf)
+    }
+
+    /// Receives one SCTP user message or notification with typed metadata.
+    pub fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceive> {
+        self.0.recv_message(buf)
     }
 
     /// Sets the read timeout.
