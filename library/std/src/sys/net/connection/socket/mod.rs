@@ -380,6 +380,10 @@ const SCTP_SOCKOPT_RECVRCVINFO: c_int = 32;
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_DEFAULT_SNDINFO: c_int = 34;
 #[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_FRAGMENT_INTERLEAVE: c_int = 18;
+#[cfg(target_os = "linux")]
+const SCTP_SOCKOPT_RECVNXTINFO: c_int = 33;
+#[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_EVENT: c_int = 127;
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_BINDX_ADD: c_int = 100;
@@ -391,6 +395,10 @@ const SCTP_SOCKOPT_CONNECTX_OLD: c_int = 107;
 const SCTP_CMSG_SNDINFO: c_int = 2;
 #[cfg(target_os = "linux")]
 const SCTP_CMSG_RCVINFO: c_int = 3;
+#[cfg(target_os = "linux")]
+const SCTP_CMSG_NXTINFO: c_int = 4;
+#[cfg(target_os = "linux")]
+const SCTP_MSG_NOTIFICATION: c_int = 0x8000;
 
 #[cfg(target_os = "linux")]
 const SCTP_EVENT_DATA_IO: u16 = 0x8000;
@@ -468,6 +476,17 @@ struct SctpRcvInfoLinux {
 
 #[cfg(target_os = "linux")]
 #[repr(C)]
+#[derive(Copy, Clone)]
+struct SctpNxtInfoLinux {
+    stream: u16,
+    flags: u16,
+    ppid: u32,
+    length: u32,
+    assoc_id: i32,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
 struct SctpEventLinux {
     assoc_id: i32,
     event_type: u16,
@@ -516,6 +535,70 @@ fn normalize_bound_addrs(addrs: &[SocketAddr], actual_port: u16) -> Vec<SocketAd
 }
 
 #[cfg(target_os = "linux")]
+fn read_u16_ne(payload: &[u8], offset: usize) -> Option<u16> {
+    let bytes = payload.get(offset..offset + 2)?;
+    Some(u16::from_ne_bytes([bytes[0], bytes[1]]))
+}
+
+#[cfg(target_os = "linux")]
+fn read_u32_ne(payload: &[u8], offset: usize) -> Option<u32> {
+    let bytes = payload.get(offset..offset + 4)?;
+    Some(u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(target_os = "linux")]
+fn read_i32_ne(payload: &[u8], offset: usize) -> Option<i32> {
+    let bytes = payload.get(offset..offset + 4)?;
+    Some(i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_sctp_notification(payload: &[u8]) -> Option<crate::net::SctpNotification> {
+    let notification_type = read_u16_ne(payload, 0)?;
+    match notification_type {
+        SCTP_EVENT_ASSOCIATION => Some(crate::net::SctpNotification::AssociationChange {
+            assoc_id: read_i32_ne(payload, 16)?,
+            state: read_u16_ne(payload, 8)?,
+            error: read_u16_ne(payload, 10)?,
+            outbound_streams: read_u16_ne(payload, 12)?,
+            inbound_streams: read_u16_ne(payload, 14)?,
+        }),
+        SCTP_EVENT_ADDRESS => {
+            let mut storage = MaybeUninit::<c::sockaddr_storage>::zeroed();
+            let addr_bytes = payload.get(8..8 + size_of::<c::sockaddr_storage>())?;
+            // SAFETY: both regions are valid for `addr_bytes.len()` and do not overlap.
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    addr_bytes.as_ptr(),
+                    storage.as_mut_ptr().cast::<u8>(),
+                    addr_bytes.len(),
+                );
+            }
+            let address =
+                unsafe { socket_addr_from_c(storage.as_ptr(), size_of::<c::sockaddr_storage>()) }
+                    .ok()?;
+            Some(crate::net::SctpNotification::PeerAddressChange {
+                address,
+                state: read_u32_ne(payload, 8 + size_of::<c::sockaddr_storage>())?,
+                error: read_u32_ne(payload, 12 + size_of::<c::sockaddr_storage>())?,
+                assoc_id: read_i32_ne(payload, 16 + size_of::<c::sockaddr_storage>())?,
+            })
+        }
+        SCTP_EVENT_SHUTDOWN => {
+            Some(crate::net::SctpNotification::Shutdown { assoc_id: read_i32_ne(payload, 8)? })
+        }
+        SCTP_EVENT_PARTIAL_DELIVERY => Some(crate::net::SctpNotification::PartialDelivery {
+            indication: read_u32_ne(payload, 8)?,
+            assoc_id: read_i32_ne(payload, 12)?,
+        }),
+        _ => Some(crate::net::SctpNotification::Unknown {
+            notification_type,
+            assoc_id: read_i32_ne(payload, 8),
+        }),
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub struct SctpStream {
     inner: Socket,
     local_addrs: Vec<SocketAddr>,
@@ -548,9 +631,7 @@ impl SctpStream {
                 max_init_timeout: opts.max_init_timeout,
             };
             unsafe { setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_INITMSG, raw) }?;
-            unsafe {
-                setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
-            }?;
+            unsafe { setsockopt(&sock, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
             sock.connect(addr)?;
             let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
             Ok(SctpStream { inner: sock, local_addrs: vec![local], peer_addrs: vec![*addr] })
@@ -827,6 +908,21 @@ impl SctpStream {
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_DEFAULT_SNDINFO, raw) }
     }
 
+    pub fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
+        unsafe {
+            setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVRCVINFO, on as c_int)
+        }?;
+        unsafe {
+            setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_RECVNXTINFO, on as c_int)
+        }
+    }
+
+    pub fn set_fragment_interleave(&self, level: u32) -> io::Result<()> {
+        unsafe {
+            setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_FRAGMENT_INTERLEAVE, level)
+        }
+    }
+
     pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_AUTOCLOSE, seconds) }
     }
@@ -885,10 +981,7 @@ impl SctpStream {
         self.inner.send_msg(&mut msg)
     }
 
-    pub fn recv_with_info(
-        &self,
-        buf: &mut [u8],
-    ) -> io::Result<(usize, Option<crate::net::SctpRecvInfo>)> {
+    fn recv_message_inner(&self, buf: &mut [u8]) -> io::Result<crate::net::SctpReceive> {
         use libc::{CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_NXTHDR, CMSG_SPACE};
 
         let mut iov = [libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() }];
@@ -898,7 +991,10 @@ impl SctpStream {
 
         #[repr(C)]
         union Cmsg {
-            buf: [u8; unsafe { CMSG_SPACE(size_of::<SctpRcvInfoLinux>() as u32) as usize }],
+            buf: [u8; unsafe {
+                (CMSG_SPACE(size_of::<SctpRcvInfoLinux>() as u32) as usize)
+                    + (CMSG_SPACE(size_of::<SctpNxtInfoLinux>() as u32) as usize)
+            }],
             _align: libc::cmsghdr,
         }
         let mut cmsg: Cmsg = unsafe { mem::zeroed() };
@@ -906,34 +1002,69 @@ impl SctpStream {
         msg.msg_controllen = size_of_val(unsafe { &cmsg.buf }) as _;
 
         let n = self.inner.recv_msg(&mut msg)?;
-        let mut out = None;
+        let mut recv_info = None;
+        let mut next_info = None;
         // SAFETY: iterating kernel-populated control-message chain in `msg`.
         unsafe {
             let mut hdr = CMSG_FIRSTHDR((&raw mut msg) as *mut _);
             while !hdr.is_null() {
-                if (*hdr).cmsg_level == IPPROTO_SCTP_LINUX
-                    && (*hdr).cmsg_type == SCTP_CMSG_RCVINFO
-                    && ((*hdr).cmsg_len as usize)
-                        >= CMSG_LEN(size_of::<SctpRcvInfoLinux>() as u32) as usize
-                {
-                    let data = CMSG_DATA(hdr).cast::<SctpRcvInfoLinux>();
-                    let d = *data;
-                    out = Some(crate::net::SctpRecvInfo {
-                        stream: d.stream,
-                        ssn: d.ssn,
-                        flags: d.flags,
-                        ppid: d.ppid,
-                        tsn: d.tsn,
-                        cumtsn: d.cumtsn,
-                        context: d.context,
-                        assoc_id: d.assoc_id,
-                    });
-                    break;
+                if (*hdr).cmsg_level == IPPROTO_SCTP_LINUX {
+                    if (*hdr).cmsg_type == SCTP_CMSG_RCVINFO
+                        && ((*hdr).cmsg_len as usize)
+                            >= CMSG_LEN(size_of::<SctpRcvInfoLinux>() as u32) as usize
+                    {
+                        let data = CMSG_DATA(hdr).cast::<SctpRcvInfoLinux>();
+                        let d = *data;
+                        recv_info = Some(crate::net::SctpRecvInfo {
+                            stream: d.stream,
+                            ssn: d.ssn,
+                            flags: d.flags,
+                            ppid: d.ppid,
+                            tsn: d.tsn,
+                            cumtsn: d.cumtsn,
+                            context: d.context,
+                            assoc_id: d.assoc_id,
+                            next: None,
+                        });
+                    } else if (*hdr).cmsg_type == SCTP_CMSG_NXTINFO
+                        && ((*hdr).cmsg_len as usize)
+                            >= CMSG_LEN(size_of::<SctpNxtInfoLinux>() as u32) as usize
+                    {
+                        let data = CMSG_DATA(hdr).cast::<SctpNxtInfoLinux>();
+                        let d = *data;
+                        next_info = Some(crate::net::SctpNextInfo {
+                            stream: d.stream,
+                            flags: d.flags,
+                            ppid: d.ppid,
+                            length: d.length,
+                            assoc_id: d.assoc_id,
+                        });
+                    }
                 }
                 hdr = CMSG_NXTHDR((&raw mut msg) as *mut _, hdr);
             }
         }
-        Ok((n, out))
+        if let Some(info) = recv_info.as_mut() {
+            info.next = next_info;
+        }
+        let notification = if (msg.msg_flags & SCTP_MSG_NOTIFICATION) != 0 {
+            parse_sctp_notification(&buf[..n])
+        } else {
+            None
+        };
+        Ok(crate::net::SctpReceive { len: n, info: recv_info, notification })
+    }
+
+    pub fn recv_with_info(
+        &self,
+        buf: &mut [u8],
+    ) -> io::Result<(usize, Option<crate::net::SctpRecvInfo>)> {
+        let received = self.recv_message_inner(buf)?;
+        Ok((received.len, received.info))
+    }
+
+    pub fn recv_message(&self, buf: &mut [u8]) -> io::Result<crate::net::SctpReceive> {
+        self.recv_message_inner(buf)
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
@@ -1437,6 +1568,14 @@ impl SctpStream {
         sctp_unsupported()
     }
 
+    pub fn set_recv_nxtinfo(&self, _on: bool) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
+    pub fn set_fragment_interleave(&self, _level: u32) -> io::Result<()> {
+        sctp_unsupported()
+    }
+
     pub fn set_autoclose(&self, _seconds: u32) -> io::Result<()> {
         sctp_unsupported()
     }
@@ -1461,6 +1600,10 @@ impl SctpStream {
         &self,
         _buf: &mut [u8],
     ) -> io::Result<(usize, Option<crate::net::SctpRecvInfo>)> {
+        sctp_unsupported()
+    }
+
+    pub fn recv_message(&self, _buf: &mut [u8]) -> io::Result<crate::net::SctpReceive> {
         sctp_unsupported()
     }
 
