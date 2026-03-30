@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, Write};
 use std::net::{
-    AddrParseError, SocketAddr, SctpInitOptions, SctpListener, SctpMultiAddr, SctpSendInfo,
-    SctpSocket, SctpStream,
+    AddrParseError, SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr, SctpNotification,
+    SctpSendInfo, SctpSocket, SctpStream, SocketAddr,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,7 +19,12 @@ const COMPLETION_SERVER_OBSERVED: &str = "server_observed";
 
 const SOURCE_PATH: &str = "src/tools/sctp-feature-client/src/main.rs";
 
-type Handler = fn(&FeatureServerClient, &SessionResponse, &CatalogFeature, &ScenarioContract) -> Result<Option<CompletionPayload>, String>;
+type Handler = fn(
+    &FeatureServerClient,
+    &SessionResponse,
+    &CatalogFeature,
+    &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String>;
 
 #[derive(Default)]
 struct Config {
@@ -128,6 +133,8 @@ struct ScenarioContract {
     manual_setup_required: bool,
     #[serde(default)]
     socket_tuning: Option<SocketTuning>,
+    #[serde(default)]
+    interleaving: Option<InterleavingContract>,
     manual_setup_instructions: Vec<String>,
     report_prompt: String,
     instructions_text: String,
@@ -143,6 +150,24 @@ struct SocketTuning {
     max_burst: u32,
     #[serde(default)]
     maxseg: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct InterleavingContract {
+    #[serde(default)]
+    fragment_interleave_level: u32,
+    #[serde(default)]
+    large_message_size: usize,
+    #[serde(default)]
+    large_stream: u16,
+    #[serde(default)]
+    large_ppid: u32,
+    #[serde(default)]
+    small_stream: u16,
+    #[serde(default)]
+    small_ppid: u32,
+    #[serde(default)]
+    small_message_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -240,10 +265,7 @@ impl FeatureServerClient {
         agent_name: &str,
         environment_name: &str,
     ) -> Result<SessionResponse, String> {
-        self.post_json(
-            "/v1/sessions",
-            &CreateSessionPayload { agent_name, environment_name },
-        )
+        self.post_json("/v1/sessions", &CreateSessionPayload { agent_name, environment_name })
     }
 
     fn start_feature(&self, session_id: &str, feature_id: &str) -> Result<FeatureState, String> {
@@ -410,10 +432,8 @@ fn run_feature(
     session: &SessionResponse,
     feature: &CatalogFeature,
 ) -> Result<FeatureState, String> {
-    let scenario = scenario_catalog()
-        .iter()
-        .find(|scenario| scenario.feature_id == feature.id)
-        .copied();
+    let scenario =
+        scenario_catalog().iter().find(|scenario| scenario.feature_id == feature.id).copied();
 
     let Some(scenario) = scenario else {
         return client.unsupported_feature(
@@ -422,12 +442,14 @@ fn run_feature(
             &UnsupportedPayload {
                 reason: "unmapped feature".to_owned(),
                 evidence_kind: "client_gap".to_owned(),
-                evidence_text: "the rust-sctp feature client does not implement this feature id".to_owned(),
+                evidence_text: "the rust-sctp feature client does not implement this feature id"
+                    .to_owned(),
             },
         );
     };
 
-    if scenario.dashboard_title != feature.title || scenario.dashboard_category != feature.category {
+    if scenario.dashboard_title != feature.title || scenario.dashboard_category != feature.category
+    {
         return Err(format!(
             "feature {} metadata drift: client has {}/{}, server has {}/{}",
             feature.id,
@@ -602,7 +624,10 @@ fn handle_max_burst(
         .as_ref()
         .ok_or_else(|| format!("feature {} did not provide socket_tuning", contract.feature_id))?;
     if tuning.max_burst == 0 {
-        return Err(format!("feature {} did not provide socket_tuning.max_burst", contract.feature_id));
+        return Err(format!(
+            "feature {} did not provide socket_tuning.max_burst",
+            contract.feature_id
+        ));
     }
     stream.set_max_burst(tuning.max_burst).map_err(io_string)?;
     send_contract_messages(&stream, &contract.client_send_messages)?;
@@ -621,13 +646,15 @@ fn handle_default_send_info(
 ) -> Result<Option<CompletionPayload>, String> {
     let mut stream = dial_contract(contract)?;
     write_contract_messages_with_default_info(&mut stream, &contract.client_send_messages)?;
-    let msg = contract
-        .client_send_messages
-        .first()
-        .ok_or_else(|| format!("feature {} did not provide any client_send_messages", contract.feature_id))?;
+    let msg = contract.client_send_messages.first().ok_or_else(|| {
+        format!("feature {} did not provide any client_send_messages", contract.feature_id)
+    })?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
-        evidence_text: format!("applied SCTP_DEFAULT_SNDINFO stream={} ppid={}", msg.stream, msg.ppid),
+        evidence_text: format!(
+            "applied SCTP_DEFAULT_SNDINFO stream={} ppid={}",
+            msg.stream, msg.ppid
+        ),
         report_text: "rust-sctp accepted SCTP_DEFAULT_SNDINFO".to_owned(),
     }))
 }
@@ -655,7 +682,10 @@ fn handle_maxseg_fragmentation(
         .as_ref()
         .ok_or_else(|| format!("feature {} did not provide socket_tuning", contract.feature_id))?;
     if tuning.maxseg == 0 {
-        return Err(format!("feature {} did not provide socket_tuning.maxseg", contract.feature_id));
+        return Err(format!(
+            "feature {} did not provide socket_tuning.maxseg",
+            contract.feature_id
+        ));
     }
     stream.set_maxseg(tuning.maxseg).map_err(io_string)?;
     write_contract_messages_with_default_info(&mut stream, &contract.client_send_messages)?;
@@ -694,7 +724,10 @@ fn handle_multi_bind(
     send_contract_messages(&stream, &contract.client_send_messages)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "multihoming".to_owned(),
-        evidence_text: format!("connected to {} advertised SCTP peer addresses", multi.addrs().len()),
+        evidence_text: format!(
+            "connected to {} advertised SCTP peer addresses",
+            multi.addrs().len()
+        ),
         report_text: "rust-sctp connected to the multihome reference server".to_owned(),
     }))
 }
@@ -743,16 +776,15 @@ fn handle_negative_connect_error(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let target: SocketAddr = contract
-        .negative_connect_target
-        .parse()
-        .map_err(|err: AddrParseError| err.to_string())?;
+    let target: SocketAddr =
+        contract.negative_connect_target.parse().map_err(|err: AddrParseError| err.to_string())?;
     match SctpStream::connect(target) {
         Ok(_) => Err("unexpectedly connected to the negative target".to_owned()),
         Err(err) => Ok(Some(CompletionPayload {
             evidence_kind: "connect_error".to_owned(),
             evidence_text: err.to_string(),
-            report_text: "rust-sctp surfaced an SCTP connect error for the invalid target".to_owned(),
+            report_text: "rust-sctp surfaced an SCTP connect error for the invalid target"
+                .to_owned(),
         })),
     }
 }
@@ -776,12 +808,294 @@ fn handle_unsupported(
         .map(|_| None)
 }
 
+#[derive(Default)]
+struct NotificationSummary {
+    count: usize,
+    types: BTreeMap<String, usize>,
+}
+
+impl NotificationSummary {
+    fn record(&mut self, notification: &SctpNotification) {
+        self.count += 1;
+        let key = notification_name(notification).to_owned();
+        *self.types.entry(key).or_insert(0) += 1;
+    }
+
+    fn has_type(&self, name: &str) -> bool {
+        self.types.contains_key(name)
+    }
+
+    fn rendered_types(&self) -> String {
+        if self.types.is_empty() {
+            return "[]".to_owned();
+        }
+        let parts =
+            self.types.iter().map(|(name, count)| format!("{name}(x{count})")).collect::<Vec<_>>();
+        format!("[{}]", parts.join(","))
+    }
+}
+
+fn notification_name(notification: &SctpNotification) -> &'static str {
+    match notification {
+        SctpNotification::AssociationChange { .. } => "SCTP_ASSOC_CHANGE",
+        SctpNotification::PeerAddressChange { .. } => "SCTP_PEER_ADDR_CHANGE",
+        SctpNotification::Shutdown { .. } => "SCTP_SHUTDOWN_EVENT",
+        SctpNotification::PartialDelivery { .. } => "SCTP_PARTIAL_DELIVERY_EVENT",
+        SctpNotification::Unknown { .. } => "SCTP_UNKNOWN_NOTIFICATION",
+        _ => "SCTP_UNKNOWN_NOTIFICATION",
+    }
+}
+
+fn handle_notification_scenario(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    stream.subscribe_events(build_event_mask(&contract.client_subscriptions)).map_err(io_string)?;
+    let notifications = run_trigger_and_read(&stream, contract)?;
+    if notifications.count == 0 {
+        return Err("no SCTP notification traffic observed".to_owned());
+    }
+    Ok(Some(CompletionPayload {
+        evidence_kind: "runtime".to_owned(),
+        evidence_text: format!("observed {} SCTP notification frame(s)", notifications.count),
+        report_text: format!("observed notification types {}", notifications.rendered_types()),
+    }))
+}
+
+fn handle_recv_nxtinfo(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    stream.set_recv_nxtinfo(true).map_err(io_string)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(contract.timeout_seconds as u64)))
+        .map_err(io_string)?;
+    if !contract.trigger_payload.is_empty() {
+        let written =
+            stream.send_with_info(contract.trigger_payload.as_bytes(), None).map_err(io_string)?;
+        if written != contract.trigger_payload.len() {
+            return Err(format!(
+                "short write for trigger payload: wrote {} bytes, expected {}",
+                written,
+                contract.trigger_payload.len()
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    if contract.server_send_messages.len() < 2 {
+        return Err(format!("feature {} requires two server messages", contract.feature_id));
+    }
+
+    let mut buf = vec![0u8; 4096];
+    let received = stream.recv_message(&mut buf).map_err(io_string)?;
+    if received.notification.is_some() {
+        return Err("received notification before first server message".to_owned());
+    }
+    let first = &contract.server_send_messages[0];
+    let got = std::str::from_utf8(&buf[..received.len]).map_err(|err| err.to_string())?;
+    if got != first.payload {
+        return Err(format!("unexpected first payload {got:?}, want {:?}", first.payload));
+    }
+    let info = received.info.ok_or_else(|| "missing first receive metadata".to_owned())?;
+    let next =
+        info.next.ok_or_else(|| "missing next-message metadata on first receive".to_owned())?;
+    let expected_next = &contract.server_send_messages[1];
+    if next.stream != expected_next.stream {
+        return Err(format!(
+            "unexpected next stream {}, want {}",
+            next.stream, expected_next.stream
+        ));
+    }
+    if next.ppid != expected_next.ppid {
+        return Err(format!("unexpected next ppid {}, want {}", next.ppid, expected_next.ppid));
+    }
+    if next.length as usize != expected_next.payload.len() {
+        return Err(format!(
+            "unexpected next length {}, want {}",
+            next.length,
+            expected_next.payload.len()
+        ));
+    }
+    read_server_messages(&stream, &contract.server_send_messages[1..])?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "runtime".to_owned(),
+        evidence_text: format!(
+            "observed next-message metadata stream={} ppid={} length={}",
+            next.stream, next.ppid, next.length
+        ),
+        report_text: format!(
+            "client observed SCTP_RECVNXTINFO for stream={} ppid={} length={}",
+            next.stream, next.ppid, next.length
+        ),
+    }))
+}
+
+fn handle_idata_interleaving(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    let interleaving = contract
+        .interleaving
+        .as_ref()
+        .ok_or_else(|| format!("feature {} did not provide interleaving", contract.feature_id))?;
+    stream.set_fragment_interleave(interleaving.fragment_interleave_level).map_err(io_string)?;
+    run_trigger_and_read(&stream, contract)?;
+    Ok(Some(CompletionPayload {
+        evidence_kind: "runtime".to_owned(),
+        evidence_text: format!(
+            "set_fragment_interleave({}) succeeded and the server burst was received",
+            interleaving.fragment_interleave_level
+        ),
+        report_text: format!(
+            "rust-sctp enabled fragment interleaving level {} and received the I-DATA burst",
+            interleaving.fragment_interleave_level
+        ),
+    }))
+}
+
+fn handle_peer_addr_change_notifications(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    let mut mask = build_event_mask(&contract.client_subscriptions);
+    mask.address = true;
+    mask.association = true;
+    stream.subscribe_events(mask).map_err(io_string)?;
+    let notifications = run_trigger_and_read(&stream, contract)?;
+    if !notifications.has_type("SCTP_PEER_ADDR_CHANGE") {
+        return Err("no SCTP_PEER_ADDR_CHANGE notification observed".to_owned());
+    }
+    Ok(Some(CompletionPayload {
+        evidence_kind: "runtime".to_owned(),
+        evidence_text: format!(
+            "observed peer-address-change notifications {}",
+            notifications.rendered_types()
+        ),
+        report_text: format!(
+            "client observed SCTP_PEER_ADDR_CHANGE notifications {}",
+            notifications.rendered_types()
+        ),
+    }))
+}
+
+fn handle_partial_delivery_event(
+    _client: &FeatureServerClient,
+    _session: &SessionResponse,
+    _feature: &CatalogFeature,
+    contract: &ScenarioContract,
+) -> Result<Option<CompletionPayload>, String> {
+    let stream = dial_contract(contract)?;
+    let mut mask = build_event_mask(&contract.client_subscriptions);
+    mask.partial_delivery = true;
+    mask.data_io = true;
+    stream.subscribe_events(mask).map_err(io_string)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(contract.timeout_seconds as u64)))
+        .map_err(io_string)?;
+    if !contract.trigger_payload.is_empty() {
+        let written =
+            stream.send_with_info(contract.trigger_payload.as_bytes(), None).map_err(io_string)?;
+        if written != contract.trigger_payload.len() {
+            return Err(format!(
+                "short write for trigger payload: wrote {} bytes, expected {}",
+                written,
+                contract.trigger_payload.len()
+            ));
+        }
+    }
+    if contract.server_send_messages.len() != 1 {
+        return Err(format!("feature {} requires exactly one server message", contract.feature_id));
+    }
+    let expected = materialize_payload(&contract.server_send_messages[0]);
+    let mut buf = vec![0u8; 4096];
+    let mut payload = Vec::with_capacity(expected.len());
+    let mut notifications = NotificationSummary::default();
+    let mut first_info_checked = false;
+    while payload.len() < expected.len() {
+        let received = stream.recv_message(&mut buf).map_err(io_string)?;
+        if let Some(notification) = received.notification.as_ref() {
+            notifications.record(notification);
+            continue;
+        }
+        if received.len == 0 {
+            return Err("unexpected EOF before the partial-delivery payload completed".to_owned());
+        }
+        if !first_info_checked {
+            first_info_checked = true;
+            let info = received
+                .info
+                .ok_or_else(|| "missing receive metadata for partial delivery".to_owned())?;
+            let want = &contract.server_send_messages[0];
+            if info.stream != want.stream {
+                return Err(format!(
+                    "unexpected server stream {}, want {}",
+                    info.stream, want.stream
+                ));
+            }
+            if info.ppid != want.ppid {
+                return Err(format!("unexpected server ppid {}, want {}", info.ppid, want.ppid));
+            }
+        }
+        payload.extend_from_slice(&buf[..received.len]);
+    }
+    if payload != expected.as_bytes() {
+        return Err(format!(
+            "unexpected partial-delivery payload length={} want={}",
+            payload.len(),
+            expected.len()
+        ));
+    }
+    stream.set_read_timeout(Some(Duration::from_millis(750))).map_err(io_string)?;
+    loop {
+        match stream.recv_message(&mut buf) {
+            Ok(received) => {
+                if let Some(notification) = received.notification.as_ref() {
+                    notifications.record(notification);
+                } else if received.len == 0 {
+                    break;
+                }
+            }
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || err.kind() == io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(err) => return Err(io_string(err)),
+        }
+    }
+    if !notifications.has_type("SCTP_PARTIAL_DELIVERY_EVENT") {
+        return Err("no SCTP_PARTIAL_DELIVERY_EVENT observed".to_owned());
+    }
+    Ok(Some(CompletionPayload {
+        evidence_kind: "runtime".to_owned(),
+        evidence_text: format!("observed notifications {}", notifications.rendered_types()),
+        report_text: format!(
+            "client observed SCTP_PARTIAL_DELIVERY_EVENT notifications {}",
+            notifications.rendered_types()
+        ),
+    }))
+}
+
 fn dial_contract(contract: &ScenarioContract) -> Result<SctpStream, String> {
     let addrs = resolve_addrs(&contract.connect_addresses)?;
     if addrs.is_empty() {
         return Err("contract did not include any SCTP connect addresses".to_owned());
     }
-    let init = SctpInitOptions { num_ostreams: 32, max_instreams: 32, ..SctpInitOptions::default() };
+    let init =
+        SctpInitOptions { num_ostreams: 32, max_instreams: 32, ..SctpInitOptions::default() };
     if addrs.len() == 1 {
         SctpStream::connect_with_init_options(addrs[0], init).map_err(io_string)
     } else {
@@ -827,13 +1141,8 @@ fn write_contract_messages_with_default_info(
         if msg.unordered {
             return Err("unordered delivery requires per-message send flags".to_owned());
         }
-        let info = SctpSendInfo {
-            stream: msg.stream,
-            flags: 0,
-            ppid: msg.ppid,
-            context: 0,
-            assoc_id: 0,
-        };
+        let info =
+            SctpSendInfo { stream: msg.stream, flags: 0, ppid: msg.ppid, context: 0, assoc_id: 0 };
         stream.set_default_send_info(info).map_err(io_string)?;
         let payload = materialize_payload(msg);
         stream.write_all(payload.as_bytes()).map_err(io_string)?;
@@ -861,6 +1170,114 @@ fn materialize_payload(msg: &MessageSpec) -> String {
     out
 }
 
+fn build_event_mask(subscriptions: &[String]) -> SctpEventMask {
+    let mut mask = SctpEventMask::default();
+    for sub in subscriptions {
+        match sub.as_str() {
+            "association" => mask.association = true,
+            "shutdown" => mask.shutdown = true,
+            "dataio" => mask.data_io = true,
+            "address" => mask.address = true,
+            "partial_delivery" => mask.partial_delivery = true,
+            _ => {}
+        }
+    }
+    mask
+}
+
+fn read_server_messages(
+    stream: &SctpStream,
+    expected: &[MessageSpec],
+) -> Result<NotificationSummary, String> {
+    let mut summary = NotificationSummary::default();
+    let mut buf = vec![0u8; max_expected_payload_size(expected)];
+    let mut received_messages = 0usize;
+    while received_messages < expected.len() {
+        let received = stream.recv_message(&mut buf).map_err(io_string)?;
+        if let Some(notification) = received.notification.as_ref() {
+            summary.record(notification);
+            continue;
+        }
+        if received.len == 0 {
+            return Err(format!(
+                "unexpected EOF after receiving {} of {} expected server messages",
+                received_messages,
+                expected.len()
+            ));
+        }
+        let want = &expected[received_messages];
+        let want_payload = materialize_payload(want);
+        let got = std::str::from_utf8(&buf[..received.len]).map_err(|err| err.to_string())?;
+        if got != want_payload {
+            return Err(format!("unexpected server payload {got:?}, want {want_payload:?}"));
+        }
+        if let Some(info) = received.info {
+            if info.stream != want.stream {
+                return Err(format!(
+                    "unexpected server stream {}, want {}",
+                    info.stream, want.stream
+                ));
+            }
+            if info.ppid != want.ppid {
+                return Err(format!("unexpected server ppid {}, want {}", info.ppid, want.ppid));
+            }
+        }
+        received_messages += 1;
+    }
+
+    stream.set_read_timeout(Some(Duration::from_millis(750))).map_err(io_string)?;
+    loop {
+        match stream.recv_message(&mut buf) {
+            Ok(received) => {
+                if let Some(notification) = received.notification.as_ref() {
+                    summary.record(notification);
+                } else if received.len == 0 {
+                    break;
+                }
+            }
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || err.kind() == io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(err) => return Err(io_string(err)),
+        }
+    }
+    Ok(summary)
+}
+
+fn max_expected_payload_size(expected: &[MessageSpec]) -> usize {
+    expected
+        .iter()
+        .map(materialize_payload)
+        .map(|payload| payload.len())
+        .max()
+        .unwrap_or(4096)
+        .max(4096)
+}
+
+fn run_trigger_and_read(
+    stream: &SctpStream,
+    contract: &ScenarioContract,
+) -> Result<NotificationSummary, String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(contract.timeout_seconds as u64)))
+        .map_err(io_string)?;
+    if !contract.trigger_payload.is_empty() {
+        let written =
+            stream.send_with_info(contract.trigger_payload.as_bytes(), None).map_err(io_string)?;
+        if written != contract.trigger_payload.len() {
+            return Err(format!(
+                "short write for trigger payload: wrote {} bytes, expected {}",
+                written,
+                contract.trigger_payload.len()
+            ));
+        }
+    }
+    read_server_messages(stream, &contract.server_send_messages)
+}
+
 fn parse_args() -> Result<Config, String> {
     let mut cfg = Config {
         agent_name: "rust-sctp-feature-client".to_owned(),
@@ -872,7 +1289,9 @@ fn parse_args() -> Result<Config, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--base-url" => cfg.base_url = args.next().ok_or("--base-url requires a value")?,
-            "--agent-name" => cfg.agent_name = args.next().ok_or("--agent-name requires a value")?,
+            "--agent-name" => {
+                cfg.agent_name = args.next().ok_or("--agent-name requires a value")?
+            }
             "--environment-name" => {
                 cfg.environment_name = args.next().ok_or("--environment-name requires a value")?
             }
@@ -1095,28 +1514,64 @@ fn scenario_catalog() -> &'static [ScenarioDefinition] {
             feature_id: "notifications",
             dashboard_title: "Association and shutdown notifications",
             dashboard_category: "events",
-            implementation_key: "unsupported",
-            source_symbol: "handle_unsupported",
-            description: "Currently unsupported by the Rust client until notification delivery is surfaced.",
-            handler: handle_unsupported,
+            implementation_key: "notification_observer",
+            source_symbol: "handle_notification_scenario",
+            description: "Subscribe to SCTP notifications and report the association and shutdown events observed.",
+            handler: handle_notification_scenario,
         },
         ScenarioDefinition {
             feature_id: "event_subscription_matrix",
             dashboard_title: "Event subscription matrix",
             dashboard_category: "events",
-            implementation_key: "unsupported",
-            source_symbol: "handle_unsupported",
-            description: "Currently unsupported by the Rust client until notification delivery is surfaced.",
-            handler: handle_unsupported,
+            implementation_key: "notification_observer",
+            source_symbol: "handle_notification_scenario",
+            description: "Subscribe to the available SCTP events and report which notifications were delivered.",
+            handler: handle_notification_scenario,
         },
         ScenarioDefinition {
             feature_id: "association_shutdown_notifications",
             dashboard_title: "Association shutdown notifications",
             dashboard_category: "events",
-            implementation_key: "unsupported",
-            source_symbol: "handle_unsupported",
-            description: "Currently unsupported by the Rust client until notification delivery is surfaced.",
-            handler: handle_unsupported,
+            implementation_key: "notification_observer",
+            source_symbol: "handle_notification_scenario",
+            description: "Observe graceful association teardown notifications after the server trigger.",
+            handler: handle_notification_scenario,
+        },
+        ScenarioDefinition {
+            feature_id: "recvnxtinfo",
+            dashboard_title: "SCTP_RECVNXTINFO",
+            dashboard_category: "metadata",
+            implementation_key: "recv_nxtinfo",
+            source_symbol: "handle_recv_nxtinfo",
+            description: "Receive two server messages and report next-message metadata from the first receive.",
+            handler: handle_recv_nxtinfo,
+        },
+        ScenarioDefinition {
+            feature_id: "idata_interleaving",
+            dashboard_title: "I-DATA / fragment interleaving",
+            dashboard_category: "messaging",
+            implementation_key: "idata_interleaving",
+            source_symbol: "handle_idata_interleaving",
+            description: "Enable fragment interleaving and receive the server's large-plus-small message burst.",
+            handler: handle_idata_interleaving,
+        },
+        ScenarioDefinition {
+            feature_id: "peer_addr_change_notifications",
+            dashboard_title: "Peer address change notifications",
+            dashboard_category: "path-management",
+            implementation_key: "peer_addr_notifications",
+            source_symbol: "handle_peer_addr_change_notifications",
+            description: "Subscribe to peer-address notifications during multihome association setup and early traffic.",
+            handler: handle_peer_addr_change_notifications,
+        },
+        ScenarioDefinition {
+            feature_id: "partial_delivery_event",
+            dashboard_title: "Partial delivery event",
+            dashboard_category: "notifications",
+            implementation_key: "partial_delivery",
+            source_symbol: "handle_partial_delivery_event",
+            description: "Receive a large server message and observe partial-delivery notifications while it is being surfaced.",
+            handler: handle_partial_delivery_event,
         },
     ]
 }
