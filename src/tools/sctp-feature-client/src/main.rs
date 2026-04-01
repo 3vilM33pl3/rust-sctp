@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, Write};
 use std::net::{
-    AddrParseError, SCTP_PR_NONE, SCTP_PR_PRIORITY, SCTP_PR_RTX, SCTP_PR_TTL, SCTP_SCHEDULER_FC,
-    SCTP_SCHEDULER_FCFS, SCTP_SCHEDULER_PRIORITY, SCTP_SCHEDULER_RR, SCTP_SCHEDULER_WFQ,
-    SCTP_STREAM_RESET_INCOMING, SCTP_STREAM_RESET_OUTGOING, SCTP_UNORDERED, SctpAssocStatus,
-    SctpAuthKey, SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr, SctpNotification,
-    SctpPrInfo, SctpPrPolicy, SctpScheduler, SctpSendInfo, SctpSocket, SctpStream, SocketAddr,
-    UdpSocket,
+    AddrParseError, Ipv4Addr, Ipv6Addr, SCTP_PR_NONE, SCTP_PR_PRIORITY, SCTP_PR_RTX, SCTP_PR_TTL,
+    SCTP_SCHEDULER_FC, SCTP_SCHEDULER_FCFS, SCTP_SCHEDULER_PRIORITY, SCTP_SCHEDULER_RR,
+    SCTP_SCHEDULER_WFQ, SCTP_STREAM_RESET_INCOMING, SCTP_STREAM_RESET_OUTGOING, SCTP_UNORDERED,
+    SctpAssocStatus, SctpAuthKey, SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr,
+    SctpNotification, SctpPrInfo, SctpPrPolicy, SctpScheduler, SctpSendInfo, SctpSocket,
+    SctpStream, SocketAddr, UdpSocket,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1432,8 +1432,8 @@ fn handle_one_to_many_multi_assoc(
     }
 
     let bind_addr = match targets.first().copied() {
-        Some(SocketAddr::V4(_)) => SocketAddr::from(([0, 0, 0, 0], 0)),
-        Some(SocketAddr::V6(_)) => SocketAddr::from(([0u16; 8], 0)),
+        Some(SocketAddr::V4(_)) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+        Some(SocketAddr::V6(_)) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
         None => return Err("no SCTP targets available for one-to-many test".to_owned()),
     };
     let socket = SctpSocket::bind(bind_addr).map_err(io_string)?;
@@ -1971,9 +1971,9 @@ fn select_bindx_local_addrs(remote: &SocketAddr) -> Result<(SocketAddr, Vec<Sock
     let local = udp.local_addr().map_err(io_string)?;
     let extra = match local {
         SocketAddr::V4(v4) if !v4.ip().is_loopback() => {
-            vec![SocketAddr::from(([127, 0, 0, 2], 0))]
+            vec![SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), 0))]
         }
-        SocketAddr::V4(_) => vec![SocketAddr::from(([127, 0, 0, 1], 0))],
+        SocketAddr::V4(_) => vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 0))],
         SocketAddr::V6(_) => Vec::new(),
     };
     Ok((local, extra))
