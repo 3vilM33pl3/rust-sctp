@@ -75,6 +75,122 @@ pub struct SctpDelayedSackInfo {
     pub frequency: u32,
 }
 
+/// SCTP partial-reliability policy identifier.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpPrPolicy(pub u16);
+
+/// SCTP default partial-reliability configuration.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpPrInfo {
+    /// Target association identifier (0 for current association).
+    pub assoc_id: i32,
+    /// Policy-specific value.
+    pub value: u32,
+    /// Partial-reliability policy selector.
+    pub policy: SctpPrPolicy,
+}
+
+/// SCTP AUTH shared-key material.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpAuthKey {
+    /// Target association identifier (0 for current association).
+    pub assoc_id: i32,
+    /// SCTP AUTH key identifier.
+    pub key_id: u16,
+    /// Raw shared-secret bytes for this key.
+    pub secret: Vec<u8>,
+}
+
+/// SCTP stream scheduler selector.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpScheduler(pub u16);
+
+/// SCTP association status returned by `SCTP_STATUS`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpAssocStatus {
+    /// Association identifier described by this status.
+    pub assoc_id: i32,
+    /// Association state returned by the kernel.
+    pub state: i32,
+    /// Current receiver window.
+    pub rwnd: u32,
+    /// Number of unacked outbound DATA/I-DATA chunks.
+    pub unacked_data: u16,
+    /// Number of pending outbound chunks.
+    pub pending_data: u16,
+    /// Configured inbound stream count.
+    pub inbound_streams: u16,
+    /// Configured outbound stream count.
+    pub outbound_streams: u16,
+    /// Current fragmentation point.
+    pub fragmentation_point: u32,
+    /// Current primary peer address, if the kernel returned one.
+    pub primary_addr: Option<SocketAddr>,
+    /// Primary-path state.
+    pub primary_state: i32,
+    /// Primary-path congestion window.
+    pub primary_cwnd: u32,
+    /// Primary-path smoothed RTT.
+    pub primary_srtt: u32,
+    /// Primary-path retransmission timeout.
+    pub primary_rto: u32,
+    /// Primary-path MTU.
+    pub primary_mtu: u32,
+}
+
+/// SCTP send flag requesting unordered delivery.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_UNORDERED: u16 = 1 << 0;
+
+/// Disable partial reliability.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_PR_NONE: SctpPrPolicy = SctpPrPolicy(0x0000);
+
+/// Time-based partial reliability.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_PR_TTL: SctpPrPolicy = SctpPrPolicy(0x0010);
+
+/// Retransmission-limited partial reliability.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_PR_RTX: SctpPrPolicy = SctpPrPolicy(0x0020);
+
+/// Priority-based partial reliability.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_PR_PRIORITY: SctpPrPolicy = SctpPrPolicy(0x0030);
+
+/// First-come, first-served stream scheduling.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_SCHEDULER_FCFS: SctpScheduler = SctpScheduler(0);
+
+/// Priority-based stream scheduling.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_SCHEDULER_PRIORITY: SctpScheduler = SctpScheduler(1);
+
+/// Round-robin stream scheduling.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_SCHEDULER_RR: SctpScheduler = SctpScheduler(2);
+
+/// Fair-capacity stream scheduling.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_SCHEDULER_FC: SctpScheduler = SctpScheduler(3);
+
+/// Weighted-fair-queueing stream scheduling.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_SCHEDULER_WFQ: SctpScheduler = SctpScheduler(4);
+
+/// Enable or request incoming stream reset support.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_STREAM_RESET_INCOMING: u16 = 0x01;
+
+/// Enable or request outgoing stream reset support.
+#[unstable(feature = "sctp", issue = "none")]
+pub const SCTP_STREAM_RESET_OUTGOING: u16 = 0x02;
+
 /// Metadata describing the next queued SCTP message, if available.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[unstable(feature = "sctp", issue = "none")]
@@ -360,6 +476,11 @@ impl SctpStream {
         self.0.set_default_send_info(info)
     }
 
+    /// Configures default partial-reliability behavior for future messages.
+    pub fn set_default_prinfo(&self, info: SctpPrInfo) -> io::Result<()> {
+        self.0.set_default_prinfo(info)
+    }
+
     /// Controls whether the kernel returns metadata for the next queued SCTP message.
     pub fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
         self.0.set_recv_nxtinfo(on)
@@ -383,6 +504,86 @@ impl SctpStream {
     /// Configures the SCTP_MAXSEG send fragmentation threshold.
     pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
         self.0.set_maxseg(value)
+    }
+
+    /// Adds local addresses to the socket or active association.
+    pub fn bindx_add(&self, addrs: &[SocketAddr]) -> io::Result<()> {
+        self.0.bindx_add(addrs)
+    }
+
+    /// Removes local addresses from the socket or active association.
+    pub fn bindx_remove(&self, addrs: &[SocketAddr]) -> io::Result<()> {
+        self.0.bindx_remove(addrs)
+    }
+
+    /// Requests a change to the primary destination address.
+    pub fn set_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
+        self.0.set_primary_addr(addr)
+    }
+
+    /// Requests that the peer switch its primary path to one of our local addresses.
+    pub fn set_peer_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
+        self.0.set_peer_primary_addr(addr)
+    }
+
+    /// Lists association identifiers currently present on this socket.
+    pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
+        self.0.assoc_ids()
+    }
+
+    /// Retrieves association status for the given association id, or for the current association when 0.
+    pub fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
+        self.0.assoc_status(assoc_id)
+    }
+
+    /// Peels the given association off onto a dedicated SCTP stream.
+    pub fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStream> {
+        self.0.peeloff(assoc_id).map(SctpStream)
+    }
+
+    /// Enables stream-reset support for the active association.
+    pub fn enable_stream_reset(&self, flags: u16) -> io::Result<()> {
+        self.0.enable_stream_reset(flags)
+    }
+
+    /// Requests a reset for the specified streams.
+    pub fn reset_streams(&self, flags: u16, streams: &[u16]) -> io::Result<()> {
+        self.0.reset_streams(flags, streams)
+    }
+
+    /// Requests additional inbound and outbound streams.
+    pub fn add_streams(&self, inbound: u16, outbound: u16) -> io::Result<()> {
+        self.0.add_streams(inbound, outbound)
+    }
+
+    /// Configures SCTP AUTH chunk coverage.
+    pub fn set_auth_chunks(&self, chunks: &[u8]) -> io::Result<()> {
+        self.0.set_auth_chunks(chunks)
+    }
+
+    /// Installs or replaces an SCTP AUTH shared key.
+    pub fn set_auth_key(&self, key: &SctpAuthKey) -> io::Result<()> {
+        self.0.set_auth_key(key)
+    }
+
+    /// Switches the active SCTP AUTH key.
+    pub fn activate_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
+        self.0.activate_auth_key(assoc_id, key_id)
+    }
+
+    /// Deletes a previously installed SCTP AUTH key.
+    pub fn delete_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
+        self.0.delete_auth_key(assoc_id, key_id)
+    }
+
+    /// Selects the SCTP stream scheduler policy.
+    pub fn set_stream_scheduler(&self, scheduler: SctpScheduler) -> io::Result<()> {
+        self.0.set_stream_scheduler(scheduler)
+    }
+
+    /// Sets a per-stream scheduler value.
+    pub fn set_stream_scheduler_value(&self, stream: u16, value: u16) -> io::Result<()> {
+        self.0.set_stream_scheduler_value(stream, value)
     }
 
     /// Receives one user message and optional SCTP receive metadata.
@@ -592,6 +793,11 @@ impl SctpSocket {
         info: Option<&SctpSendInfo>,
     ) -> io::Result<usize> {
         self.0.send_to_with_info(buf, addr, info)
+    }
+
+    /// Lists association identifiers currently present on this socket.
+    pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
+        self.0.assoc_ids()
     }
 
     /// Moves this socket into or out of nonblocking mode.
