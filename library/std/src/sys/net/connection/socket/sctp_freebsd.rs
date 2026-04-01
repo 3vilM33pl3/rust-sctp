@@ -791,6 +791,7 @@ impl SctpStream {
     pub fn bind(addr: SocketAddr) -> io::Result<SctpStream> {
         init();
         let sock = sctp_socket(addr_family(&addr), c::SOCK_STREAM)?;
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addr);
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
@@ -808,6 +809,7 @@ impl SctpStream {
             return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addrs[0]);
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         if addrs.len() > 1 {
@@ -1073,6 +1075,7 @@ impl SctpStream {
             if assoc_id == 0 { resolve_assoc_id(&self.inner, self.assoc_id)? } else { assoc_id };
         let fd = cvt(unsafe { sctp_peeloff(self.inner.as_raw(), resolved as u32) })? as c_int;
         let sock = unsafe { Socket::from_raw_fd(fd) };
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         let peer = unsafe { sockname(|buf, len| c::getpeername(sock.as_raw(), buf, len)) }?;
         Ok(SctpStream {
@@ -1390,6 +1393,9 @@ impl SctpListener {
         each_addr(addr, |addr| {
             let sock = sctp_socket(addr_family(addr), c::SOCK_STREAM)?;
             unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
+            unsafe {
+                setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
+            }?;
             let (raw, len) = socket_addr_to_c(addr);
             cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
             cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
@@ -1405,6 +1411,7 @@ impl SctpListener {
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
         unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addrs[0]);
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         if addrs.len() > 1 {
@@ -1431,6 +1438,7 @@ impl SctpListener {
         let mut storage = MaybeUninit::<c::sockaddr_storage>::uninit();
         let mut len = mem::size_of::<c::sockaddr_storage>() as c::socklen_t;
         let sock = self.inner.accept(storage.as_mut_ptr() as *mut _, &mut len)?;
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let addr = unsafe { socket_addr_from_c(storage.as_ptr(), len as usize)? };
         Ok((
             SctpStream {
@@ -1538,6 +1546,9 @@ impl SctpSocket {
         each_addr(addr, |addr| {
             let sock = sctp_socket(addr_family(addr), c::SOCK_SEQPACKET)?;
             unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
+            unsafe {
+                setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
+            }?;
             let (raw, len) = socket_addr_to_c(addr);
             cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
             let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
@@ -1552,6 +1563,7 @@ impl SctpSocket {
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_SEQPACKET)?;
         unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
+        unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addrs[0]);
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         if addrs.len() > 1 {
