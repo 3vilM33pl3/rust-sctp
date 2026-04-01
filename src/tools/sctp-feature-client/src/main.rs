@@ -87,7 +87,8 @@ struct ScenarioDefinition {
 
 #[derive(Deserialize)]
 struct CatalogResponse {
-    server: String,
+    #[serde(rename = "server")]
+    _server: String,
     features: Vec<CatalogFeature>,
 }
 
@@ -96,16 +97,19 @@ struct CatalogFeature {
     id: String,
     title: String,
     category: String,
-    summary: String,
+    #[serde(rename = "summary")]
+    _summary: String,
     completion_mode: String,
-    timeout_seconds: i32,
+    #[serde(rename = "timeout_seconds")]
+    _timeout_seconds: i32,
     manual_setup_required: bool,
 }
 
 #[derive(Deserialize)]
 struct SessionResponse {
     session_id: String,
-    dashboard_path: String,
+    #[serde(rename = "dashboard_path")]
+    _dashboard_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -869,25 +873,6 @@ fn handle_negative_connect_error(
             assoc_ids: Vec::new(),
         })),
     }
-}
-
-fn handle_unsupported(
-    client: &FeatureServerClient,
-    session: &SessionResponse,
-    feature: &CatalogFeature,
-    _contract: &ScenarioContract,
-) -> Result<Option<CompletionPayload>, String> {
-    client
-        .unsupported_feature(
-            &session.session_id,
-            &feature.id,
-            &UnsupportedPayload {
-                reason: "unimplemented runtime feature".to_owned(),
-                evidence_kind: "runtime_gap".to_owned(),
-                evidence_text: "the current rust-sctp runtime does not expose the API needed for this feature yet".to_owned(),
-            },
-        )
-        .map(|_| None)
 }
 
 #[derive(Default)]
@@ -1776,29 +1761,6 @@ fn resolve_addrs(raw: &[String]) -> Result<Vec<SocketAddr>, String> {
     raw.iter()
         .map(|addr| addr.parse().map_err(|err| format!("invalid socket address {addr}: {err}")))
         .collect()
-}
-
-fn send_contract_messages(stream: &SctpStream, messages: &[MessageSpec]) -> Result<(), String> {
-    for msg in messages {
-        let payload = materialize_payload(msg);
-        let info = SctpSendInfo {
-            stream: msg.stream,
-            flags: if msg.unordered { 1 } else { 0 },
-            ppid: msg.ppid,
-            context: 0,
-            assoc_id: 0,
-        };
-        let written = stream.send_with_info(payload.as_bytes(), Some(&info)).map_err(io_string)?;
-        if written != payload.len() {
-            return Err(format!(
-                "short write for payload {}: wrote {} bytes, expected {}",
-                msg.payload,
-                written,
-                payload.len()
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn write_contract_messages_with_default_info(

@@ -409,10 +409,6 @@ const SCTP_SOCKOPT_BINDX_REMOVE: c_int = 101;
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_PEELOFF: c_int = 102;
 #[cfg(target_os = "linux")]
-const SCTP_GET_PEER_ADDRS: c_int = 108;
-#[cfg(target_os = "linux")]
-const SCTP_GET_LOCAL_ADDRS: c_int = 109;
-#[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_DEFAULT_PRINFO: c_int = 114;
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_ENABLE_STREAM_RESET: c_int = 118;
@@ -1281,8 +1277,9 @@ impl SctpStream {
             )
         };
         get_sockopt_bytes(&self.inner, IPPROTO_SCTP_LINUX, SCTP_SOCKOPT_STATUS, &mut buf)?;
-        let primary_addr =
-            socket_addr_from_c(raw.primary.addr.as_ptr().cast::<c::sockaddr_storage>(), 128).ok();
+        let primary_addr = unsafe {
+            socket_addr_from_c(raw.primary.addr.as_ptr().cast::<c::sockaddr_storage>(), 128).ok()
+        };
         Ok(crate::net::SctpAssocStatus {
             assoc_id: raw.assoc_id,
             state: raw.state,
