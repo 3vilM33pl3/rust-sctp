@@ -41,6 +41,7 @@
 //! [rtc-sctp]: https://github.com/webrtc-rs/rtc/tree/master/rtc-sctp
 
 #![no_std]
+#![cfg_attr(feature = "rustc-dep-of-std", allow(unused_extern_crates))]
 #![warn(rust_2018_idioms)]
 #![deny(clippy::std_instead_of_core)]
 #![deny(clippy::std_instead_of_alloc)]

@@ -32,7 +32,7 @@ use crate::param::param_state_cookie::ParamStateCookie;
 use crate::param::param_supported_extensions::ParamSupportedExtensions;
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::{AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner};
-use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
+use crate::util::{random_nonzero_u32, sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{AssociationEvent, Payload, Side, Transmit};
 use stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use timer::{ACK_INTERVAL, RtoManager, Timer, TimerTable};
@@ -45,16 +45,15 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use bytes::Bytes;
+use core::fmt;
+use core::hash::BuildHasherDefault;
 use core::net::{IpAddr, SocketAddr};
-use core::num::NonZeroU32;
 use core::str::FromStr;
 use core::time::Duration;
 use log::{debug, error, trace, warn};
-use rand::random;
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use std::collections::HashMap;
 use std::time::Instant;
-use thiserror::Error;
 
 pub(crate) mod state;
 pub(crate) mod stats;
@@ -64,34 +63,43 @@ mod timer;
 #[cfg(test)]
 mod association_test;
 
+type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
 /// Reasons why an association might be lost
 #[non_exhaustive]
-#[derive(Debug, Error, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AssociationError {
     /// Handshake failed
-    #[error("{0}")]
-    HandshakeFailed(#[from] Error),
+    HandshakeFailed(Error),
     /// The peer violated the QUIC specification as understood by this implementation
-    #[error("transport error")]
     TransportError,
     /// The peer's QUIC stack aborted the association automatically
-    #[error("aborted by peer")]
     AssociationClosed,
     /// The peer closed the association
-    #[error("closed by peer")]
     ApplicationClosed,
     /// The peer is unable to continue processing this association, usually due to having restarted
-    #[error("reset by peer")]
     Reset,
     /// Communication with the peer has lapsed for longer than the negotiated idle timeout
     ///
     /// If neither side is sending keep-alives, an association will time out after a long enough idle
     /// period even if the peer is still reachable
-    #[error("timed out")]
     TimedOut,
     /// The local application closed the association
-    #[error("closed")]
     LocallyClosed,
+}
+
+impl fmt::Display for AssociationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::error::Error for AssociationError {}
+
+impl From<Error> for AssociationError {
+    fn from(value: Error) -> Self {
+        Self::HandshakeFailed(value)
+    }
 }
 
 /// Events of interest to the application
@@ -392,7 +400,7 @@ impl Association {
             Side::Client
         };
 
-        let tsn = random::<NonZeroU32>().get();
+        let tsn = random_nonzero_u32().get();
 
         let mut this = Self::new_common(
             config,

@@ -38,6 +38,11 @@ repository = "https://github.com/algesten/sctp-proto"
 
 [features]
 _fuzz = []
+rustc-dep-of-std = [
+    "dep:alloc",
+    "dep:core",
+    "dep:std",
+]
 
 [lib]
 name = "sctp_proto"
@@ -45,24 +50,37 @@ path = "src/lib.rs"
 
 [dependencies.bytes]
 version = "1.5.0"
+default-features = false
 
 [dependencies.crc]
 version = "3.4.0"
 
 [dependencies.log]
 version = "0.4.21"
-
-[dependencies.rand]
-version = "0.9"
+default-features = false
 
 [dependencies.rustc-hash]
 version = "2.1.1"
+default-features = false
 
 [dependencies.slab]
 version = "0.4.9"
+default-features = false
 
-[dependencies.thiserror]
-version = "2.0.18"
+[dependencies.alloc]
+version = "1.0"
+optional = true
+package = "rustc-std-workspace-alloc"
+
+[dependencies.core]
+version = "1.0"
+optional = true
+package = "rustc-std-workspace-core"
+
+[dependencies.std]
+version = "1.0"
+optional = true
+package = "rustc-std-workspace-std"
 
 [dev-dependencies.assert_matches]
 version = "1.5.0"

@@ -6,10 +6,12 @@ use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use core::fmt;
+use core::hash::BuildHasherDefault;
 use core::iter;
 use core::net::{IpAddr, SocketAddr};
 use core::ops::{Index, IndexMut};
 use std::collections::HashMap;
+use std::error;
 use std::time::Instant;
 
 use crate::chunk::{chunk_init::ChunkInit, chunk_type::CT_INIT};
@@ -25,10 +27,10 @@ use crate::{association::Association, chunk::Chunk};
 
 use bytes::Bytes;
 use log::{debug, trace, warn};
-use rand::{SeedableRng, rngs::StdRng};
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use slab::Slab;
-use thiserror::Error;
+
+type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// The main entry point to the library
 ///
@@ -36,7 +38,6 @@ use thiserror::Error;
 /// `poll_transmit`, and consumes incoming packets and association-generated events via `handle` and
 /// `handle_event`.
 pub struct Endpoint {
-    rng: StdRng,
     transmits: VecDeque<Transmit>,
     /// Identifies associations based on the INIT Dst AID the peer utilized
     ///
@@ -61,7 +62,6 @@ pub struct Endpoint {
 impl fmt::Debug for Endpoint {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Endpoint<T>")
-            .field("rng", &self.rng)
             .field("transmits", &self.transmits)
             .field("association_ids_initial", &self.association_ids_init)
             .field("association_ids", &self.association_ids)
@@ -78,12 +78,7 @@ impl Endpoint {
     ///
     /// Returns `Err` if the configuration is invalid.
     pub fn new(config: Arc<EndpointConfig>, server_config: Option<Arc<ServerConfig>>) -> Self {
-        let rng = {
-            let mut base = rand::rng();
-            StdRng::from_rng(&mut base)
-        };
         Self {
-            rng,
             transmits: VecDeque::new(),
             association_ids_init: HashMap::default(),
             association_ids: FxHashMap::default(),
@@ -582,34 +577,42 @@ pub enum DatagramEvent {
 ///
 /// These arise before any I/O has been performed.
 #[non_exhaustive]
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectError {
     /// The endpoint can no longer create new associations
     ///
     /// Indicates that a necessary component of the endpoint has been dropped or otherwise disabled.
-    #[error("endpoint stopping")]
     EndpointStopping,
     /// The number of active associations on the local endpoint is at the limit
     ///
     /// Try using longer association IDs.
-    #[error("too many associations")]
     TooManyAssociations,
     /// The domain name supplied was malformed
-    #[error("invalid DNS name: {0}")]
     InvalidDnsName(String),
     /// The remote [`SocketAddr`] supplied was malformed
     ///
     /// Examples include attempting to connect to port 0, or using an inappropriate address family.
-    #[error("invalid remote address: {0}")]
     InvalidRemoteAddress(SocketAddr),
     /// No default client configuration was set up
     ///
     /// Use `Endpoint::connect_with` to specify a client configuration.
-    #[error("no default client config")]
     NoDefaultClientConfig,
     /// Out-of-band SNAP setup error.
-    #[error("SNAP error: {0}")]
-    Snap(#[from] SnapError),
+    Snap(SnapError),
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl error::Error for ConnectError {}
+
+impl From<SnapError> for ConnectError {
+    fn from(value: SnapError) -> Self {
+        Self::Snap(value)
+    }
 }
 
 /// Which peer's token (INIT chunk) caused a [`SnapError`].
@@ -670,10 +673,9 @@ impl fmt::Display for AidCollisionKind {
 /// These are not part of the stable API — match on [`ConnectError::Snap`]
 /// and use the `Display` impl for user-facing messages.
 #[non_exhaustive]
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapError {
     /// Failed to parse token (INIT chunk) bytes.
-    #[error("failed to parse {side} SNAP token: {reason}")]
     ParseFailed {
         /// Which side's token failed to parse.
         side: SnapSide,
@@ -681,25 +683,21 @@ pub enum SnapError {
         reason: String,
     },
     /// The provided bytes were an INIT-ACK, not an INIT.
-    #[error("invalid {side} SNAP token: expected INIT, got INIT-ACK")]
     InvalidInitAck {
         /// Which side provided an INIT-ACK instead of an INIT.
         side: SnapSide,
     },
     /// The token's `initiate_tag` is zero (RFC 4960 §3.3.2 violation).
-    #[error("{side} SNAP token has zero initiate_tag")]
     ZeroInitiateTag {
         /// Which side has the zero tag.
         side: SnapSide,
     },
     /// The token's `initial_tsn` is zero.
-    #[error("{side} SNAP token has zero initial_tsn")]
     ZeroInitialTsn {
         /// Which side has the zero TSN.
         side: SnapSide,
     },
     /// An association ID collision was detected.
-    #[error("SNAP collision: {kind} {aid:#x} already in use")]
     AidCollision {
         /// Which routing table collided.
         kind: AidCollisionKind,
@@ -707,7 +705,6 @@ pub enum SnapError {
         aid: u32,
     },
     /// The token (INIT chunk) bytes exceed the maximum allowed size.
-    #[error("{side} SNAP token too large: {len} bytes (max {max})", max = MAX_SNAP_INIT_BYTES)]
     OversizedInit {
         /// Which side sent oversized bytes.
         side: SnapSide,
@@ -715,7 +712,6 @@ pub enum SnapError {
         len: usize,
     },
     /// The parsed token (INIT chunk) failed RFC 4960 validation.
-    #[error("invalid {side} SNAP token: {reason}")]
     InvalidInit {
         /// Which side has the invalid token.
         side: SnapSide,
@@ -723,6 +719,13 @@ pub enum SnapError {
         reason: String,
     },
     /// Association creation failed.
-    #[error("failed to create SNAP association: {0}")]
     AssociationFailed(String),
 }
+
+impl fmt::Display for SnapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl error::Error for SnapError {}

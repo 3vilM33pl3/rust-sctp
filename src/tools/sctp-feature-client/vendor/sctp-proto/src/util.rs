@@ -2,8 +2,45 @@ use crate::shared::AssociationId;
 
 use alloc::borrow::ToOwned;
 use bytes::Bytes;
+use core::hash::{BuildHasher, Hash, Hasher};
+use core::num::NonZeroU32;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use crc::{CRC_32_ISCSI, Crc, Table};
+use std::collections::hash_map::RandomState;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_random_u64() -> u64 {
+    let counter = RANDOM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let mut hasher = RandomState::new().build_hasher();
+    counter.hash(&mut hasher);
+    now.hash(&mut hasher);
+    (&hasher as *const _ as usize).hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn random_u32() -> u32 {
+    next_random_u64() as u32
+}
+
+pub(crate) fn random_nonzero_u32() -> NonZeroU32 {
+    NonZeroU32::new(random_u32()).unwrap_or(NonZeroU32::MIN)
+}
+
+pub(crate) fn fill_random_bytes(buf: &mut [u8]) {
+    let mut seed = next_random_u64();
+    let mut offset = 0;
+    while offset < buf.len() {
+        seed = seed.rotate_left(17) ^ next_random_u64();
+        let bytes = seed.to_ne_bytes();
+        let count = (buf.len() - offset).min(bytes.len());
+        buf[offset..offset + count].copy_from_slice(&bytes[..count]);
+        offset += count;
+    }
+}
 
 /// This function is non-inline to prevent the optimizer from looking inside it.
 #[inline(never)]
@@ -65,7 +102,7 @@ impl RandomAssociationIdGenerator {
 
 impl AssociationIdGenerator for RandomAssociationIdGenerator {
     fn generate_aid(&mut self) -> AssociationId {
-        rand::random::<u32>()
+        random_u32()
     }
 
     fn aid_lifetime(&self) -> Option<Duration> {
