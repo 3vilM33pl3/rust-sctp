@@ -2,24 +2,33 @@ use crate::shared::AssociationId;
 
 use alloc::borrow::ToOwned;
 use bytes::Bytes;
-use core::hash::{BuildHasher, Hash, Hasher};
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use crc::{CRC_32_ISCSI, Crc, Table};
-use std::collections::hash_map::RandomState;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+fn mix_u64(mut value: u64) -> u64 {
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xc4ceb9fe1a85ec53);
+    value ^ (value >> 33)
+}
+
 fn next_random_u64() -> u64 {
     let counter = RANDOM_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let mut hasher = RandomState::new().build_hasher();
-    counter.hash(&mut hasher);
-    now.hash(&mut hasher);
-    (&hasher as *const _ as usize).hash(&mut hasher);
-    hasher.finish()
+    #[cfg(not(feature = "rustc-dep-of-std"))]
+    let seed = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+    };
+    #[cfg(feature = "rustc-dep-of-std")]
+    let seed = (&RANDOM_COUNTER as *const _ as usize as u64).rotate_left(17);
+
+    mix_u64(counter ^ seed.rotate_left(7) ^ counter.wrapping_mul(0x9e3779b97f4a7c15))
 }
 
 pub(crate) fn random_u32() -> u32 {

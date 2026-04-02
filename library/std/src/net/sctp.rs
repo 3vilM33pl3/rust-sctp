@@ -10,6 +10,8 @@
     ))
 ))]
 mod tests;
+#[cfg(target_os = "linux")]
+mod udp_linux;
 
 use crate::fmt;
 use crate::io::prelude::*;
@@ -31,6 +33,48 @@ pub struct SctpInitOptions {
     pub max_attempts: u16,
     /// Maximum `INIT` retransmission timeout in milliseconds.
     pub max_init_timeout: u16,
+}
+
+/// SCTP transport selection policy.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub enum SctpTransportPolicy {
+    /// Use the operating system SCTP stack only.
+    #[default]
+    NativeOnly,
+    /// Prefer native SCTP and fall back to UDP encapsulation if the host does not support SCTP.
+    NativePreferred,
+    /// Use SCTP encapsulated in UDP.
+    UdpOnly,
+}
+
+/// UDP encapsulation settings for RFC 6951 SCTP fallback.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpUdpConfig {
+    /// Remote UDP encapsulation port. When omitted, the peer SCTP port is reused.
+    pub remote_encap_port: Option<u16>,
+    /// Local UDP encapsulation port. When omitted, the local SCTP port is reused.
+    pub local_encap_port: Option<u16>,
+    /// Whether the backend should attempt to reuse the encapsulation port.
+    pub reuse_port: bool,
+}
+
+/// SCTP transport configuration.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpTransportConfig {
+    /// Transport selection policy.
+    pub policy: SctpTransportPolicy,
+    /// UDP encapsulation settings used by `UdpOnly` and `NativePreferred`.
+    pub udp: Option<SctpUdpConfig>,
+}
+
+#[unstable(feature = "sctp", issue = "none")]
+impl Default for SctpTransportConfig {
+    fn default() -> Self {
+        Self { policy: SctpTransportPolicy::NativeOnly, udp: None }
+    }
 }
 
 /// Per-message SCTP send metadata.
@@ -365,15 +409,33 @@ impl SctpMultiAddr {
 
 /// An SCTP stream between a local and remote endpoint.
 #[unstable(feature = "sctp", issue = "none")]
-pub struct SctpStream(net_imp::SctpStream);
+pub struct SctpStream(SctpStreamBackend);
 
 /// An SCTP listener socket.
 #[unstable(feature = "sctp", issue = "none")]
-pub struct SctpListener(net_imp::SctpListener);
+pub struct SctpListener(SctpListenerBackend);
 
 /// An unconnected one-to-many SCTP socket.
 #[unstable(feature = "sctp", issue = "none")]
-pub struct SctpSocket(net_imp::SctpSocket);
+pub struct SctpSocket(SctpSocketBackend);
+
+enum SctpStreamBackend {
+    Native(net_imp::SctpStream),
+    #[cfg(target_os = "linux")]
+    Udp(udp_linux::UdpSctpStream),
+}
+
+enum SctpListenerBackend {
+    Native(net_imp::SctpListener),
+    #[cfg(target_os = "linux")]
+    Udp(udp_linux::UdpSctpListener),
+}
+
+enum SctpSocketBackend {
+    Native(net_imp::SctpSocket),
+    #[cfg(target_os = "linux")]
+    Udp(udp_linux::UdpSctpSocket),
+}
 
 /// Iterator over incoming SCTP streams.
 #[must_use = "iterators are lazy and do nothing unless consumed"]
@@ -383,11 +445,795 @@ pub struct SctpIncoming<'a> {
     listener: &'a SctpListener,
 }
 
+fn resolve_socket_addrs<A: ToSocketAddrs>(addr: A) -> io::Result<Vec<SocketAddr>> {
+    let addrs = addr.to_socket_addrs()?.collect::<Vec<_>>();
+    if addrs.is_empty() {
+        Err(io::Error::new(io::ErrorKind::InvalidInput, "no socket addresses resolved"))
+    } else {
+        Ok(addrs)
+    }
+}
+
+fn udp_config(config: SctpTransportConfig) -> io::Result<SctpUdpConfig> {
+    config.udp.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "UDP transport policy requires udp encapsulation settings",
+        )
+    })
+}
+
+fn is_native_sctp_unsupported(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::Unsupported
+        || matches!(err.raw_os_error(), Some(92 | 93 | 94 | 97))
+}
+
+impl SctpStreamBackend {
+    fn connect(
+        addrs: &[SocketAddr],
+        opts: SctpInitOptions,
+        config: SctpTransportConfig,
+        multi: bool,
+    ) -> io::Result<Self> {
+        match config.policy {
+            SctpTransportPolicy::NativeOnly => {
+                if multi {
+                    net_imp::SctpStream::connect_multi_with_init_options(addrs, opts).map(Self::Native)
+                } else {
+                    net_imp::SctpStream::connect_with_init_options(addrs, opts).map(Self::Native)
+                }
+            }
+            SctpTransportPolicy::NativePreferred => {
+                let native = if multi {
+                    net_imp::SctpStream::connect_multi_with_init_options(addrs, opts)
+                } else {
+                    net_imp::SctpStream::connect_with_init_options(addrs, opts)
+                };
+                match native {
+                    Ok(stream) => Ok(Self::Native(stream)),
+                    Err(err) if is_native_sctp_unsupported(&err) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            udp_linux::UdpSctpStream::connect(addrs, opts, &udp_config(config)?)
+                                .map(Self::Udp)
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            let _ = addrs;
+                            let _ = opts;
+                            let _ = config;
+                            Err(udp_only_unsupported())
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            SctpTransportPolicy::UdpOnly => {
+                #[cfg(target_os = "linux")]
+                {
+                    udp_linux::UdpSctpStream::connect(addrs, opts, &udp_config(config)?)
+                        .map(Self::Udp)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = addrs;
+                    let _ = opts;
+                    let _ = config;
+                    Err(udp_only_unsupported())
+                }
+            }
+        }
+    }
+
+    fn bind(local: &[SocketAddr], config: SctpTransportConfig, multi: bool) -> io::Result<Self> {
+        match config.policy {
+            SctpTransportPolicy::NativeOnly => {
+                if multi {
+                    net_imp::SctpStream::bind_multi(local).map(Self::Native)
+                } else {
+                    net_imp::SctpStream::bind(local[0]).map(Self::Native)
+                }
+            }
+            SctpTransportPolicy::NativePreferred => {
+                let native = if multi {
+                    net_imp::SctpStream::bind_multi(local)
+                } else {
+                    net_imp::SctpStream::bind(local[0])
+                };
+                match native {
+                    Ok(stream) => Ok(Self::Native(stream)),
+                    Err(err) if is_native_sctp_unsupported(&err) => Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "UDP-encapsulated SCTP stream bind is not supported",
+                    )),
+                    Err(err) => Err(err),
+                }
+            }
+            SctpTransportPolicy::UdpOnly => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "UDP-encapsulated SCTP stream bind is not supported",
+            )),
+        }
+    }
+
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Native(inner) => inner.peer_addr(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.peer_addr(),
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Native(inner) => inner.socket_addr(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.local_addr(),
+        }
+    }
+
+    fn peer_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        match self {
+            Self::Native(inner) => inner.peer_addrs(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.peer_addrs(),
+        }
+    }
+
+    fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        match self {
+            Self::Native(inner) => inner.local_addrs(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.local_addrs(),
+        }
+    }
+
+    fn set_nodelay(&self, on: bool) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_nodelay(on),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_nodelay(on),
+        }
+    }
+
+    fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_init_options(opts),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_init_options(opts),
+        }
+    }
+
+    fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.subscribe_events(mask),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.subscribe_events(mask),
+        }
+    }
+
+    fn send_with_info(&self, buf: &[u8], info: Option<&SctpSendInfo>) -> io::Result<usize> {
+        match self {
+            Self::Native(inner) => inner.send_with_info(buf, info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.send_with_info(buf, info),
+        }
+    }
+
+    fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_rto_info(info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_rto_info(info),
+        }
+    }
+
+    fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_delayed_sack(info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_delayed_sack(info),
+        }
+    }
+
+    fn set_default_send_info(&self, info: SctpSendInfo) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_default_send_info(info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_default_send_info(info),
+        }
+    }
+
+    fn set_default_prinfo(&self, info: SctpPrInfo) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_default_prinfo(info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_default_prinfo(info),
+        }
+    }
+
+    fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_recv_nxtinfo(on),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_recv_nxtinfo(on),
+        }
+    }
+
+    fn set_fragment_interleave(&self, level: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_fragment_interleave(level),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_fragment_interleave(level),
+        }
+    }
+
+    fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_autoclose(seconds),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_autoclose(seconds),
+        }
+    }
+
+    fn set_max_burst(&self, value: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_max_burst(value),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_max_burst(value),
+        }
+    }
+
+    fn set_maxseg(&self, value: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_maxseg(value),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_maxseg(value),
+        }
+    }
+
+    fn bindx_add(&self, addrs: &[SocketAddr]) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.bindx_add(addrs),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.bindx_add(addrs),
+        }
+    }
+
+    fn bindx_remove(&self, addrs: &[SocketAddr]) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.bindx_remove(addrs),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.bindx_remove(addrs),
+        }
+    }
+
+    fn set_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_primary_addr(addr),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_primary_addr(addr),
+        }
+    }
+
+    fn set_peer_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_peer_primary_addr(addr),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_peer_primary_addr(addr),
+        }
+    }
+
+    fn assoc_ids(&self) -> io::Result<Vec<i32>> {
+        match self {
+            Self::Native(inner) => inner.assoc_ids(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.assoc_ids(),
+        }
+    }
+
+    fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
+        match self {
+            Self::Native(inner) => inner.assoc_status(assoc_id),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.assoc_status(assoc_id),
+        }
+    }
+
+    fn peeloff(&self, assoc_id: i32) -> io::Result<Self> {
+        match self {
+            Self::Native(inner) => inner.peeloff(assoc_id).map(Self::Native),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.peeloff(assoc_id).map(Self::Udp),
+        }
+    }
+
+    fn enable_stream_reset(&self, flags: u16) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.enable_stream_reset(flags),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.enable_stream_reset(flags),
+        }
+    }
+
+    fn reset_streams(&self, flags: u16, streams: &[u16]) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.reset_streams(flags, streams),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.reset_streams(flags, streams),
+        }
+    }
+
+    fn add_streams(&self, inbound: u16, outbound: u16) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.add_streams(inbound, outbound),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.add_streams(inbound, outbound),
+        }
+    }
+
+    fn set_auth_chunks(&self, chunks: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_auth_chunks(chunks),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_auth_chunks(chunks),
+        }
+    }
+
+    fn set_auth_key(&self, key: &SctpAuthKey) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_auth_key(key),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_auth_key(key),
+        }
+    }
+
+    fn activate_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.activate_auth_key(assoc_id, key_id),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.activate_auth_key(assoc_id, key_id),
+        }
+    }
+
+    fn delete_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.delete_auth_key(assoc_id, key_id),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.delete_auth_key(assoc_id, key_id),
+        }
+    }
+
+    fn set_stream_scheduler(&self, scheduler: SctpScheduler) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_stream_scheduler(scheduler),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_stream_scheduler(scheduler),
+        }
+    }
+
+    fn set_stream_scheduler_value(&self, stream: u16, value: u16) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_stream_scheduler_value(stream, value),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_stream_scheduler_value(stream, value),
+        }
+    }
+
+    fn recv_with_info(&self, buf: &mut [u8]) -> io::Result<(usize, Option<SctpRecvInfo>)> {
+        match self {
+            Self::Native(inner) => inner.recv_with_info(buf),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.recv_with_info(buf),
+        }
+    }
+
+    fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceive> {
+        match self {
+            Self::Native(inner) => inner.recv_message(buf),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.recv_message(buf),
+        }
+    }
+
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_read_timeout(dur),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_read_timeout(dur),
+        }
+    }
+
+    fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_write_timeout(dur),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_write_timeout(dur),
+        }
+    }
+
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Native(inner) => inner.read_timeout(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.read_timeout(),
+        }
+    }
+
+    fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Native(inner) => inner.write_timeout(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.write_timeout(),
+        }
+    }
+
+    fn shutdown(&self, how: super::Shutdown) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.shutdown(how),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.shutdown(how),
+        }
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_nonblocking(nonblocking),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_nonblocking(nonblocking),
+        }
+    }
+
+    fn take_error(&self) -> io::Result<Option<io::Error>> {
+        match self {
+            Self::Native(inner) => inner.take_error(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.take_error(),
+        }
+    }
+
+    fn duplicate(&self) -> io::Result<Self> {
+        match self {
+            Self::Native(inner) => inner.duplicate().map(Self::Native),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.try_clone().map(Self::Udp),
+        }
+    }
+
+    fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Native(inner) => inner.read(buf),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.read(buf),
+        }
+    }
+
+    fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.read_buf(cursor),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.read_buf(cursor),
+        }
+    }
+
+    fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        match self {
+            Self::Native(inner) => inner.read_vectored(bufs),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.read_vectored(bufs),
+        }
+    }
+
+    fn is_read_vectored(&self) -> bool {
+        match self {
+            Self::Native(inner) => inner.is_read_vectored(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => true,
+        }
+    }
+
+    fn write(&self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Native(inner) => inner.write(buf),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.write(buf),
+        }
+    }
+
+    fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        match self {
+            Self::Native(inner) => inner.write_vectored(bufs),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.write_vectored(bufs),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Self::Native(inner) => inner.is_write_vectored(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => true,
+        }
+    }
+}
+
+impl SctpListenerBackend {
+    fn bind(local: &[SocketAddr], config: SctpTransportConfig, multi: bool) -> io::Result<Self> {
+        match config.policy {
+            SctpTransportPolicy::NativeOnly => {
+                if multi {
+                    net_imp::SctpListener::bind_multi(local).map(Self::Native)
+                } else {
+                    net_imp::SctpListener::bind(local).map(Self::Native)
+                }
+            }
+            SctpTransportPolicy::NativePreferred => {
+                let native = if multi {
+                    net_imp::SctpListener::bind_multi(local)
+                } else {
+                    net_imp::SctpListener::bind(local)
+                };
+                match native {
+                    Ok(listener) => Ok(Self::Native(listener)),
+                    Err(err) if is_native_sctp_unsupported(&err) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            udp_linux::UdpSctpListener::bind(local[0], &udp_config(config)?).map(Self::Udp)
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            let _ = local;
+                            let _ = config;
+                            Err(udp_only_unsupported())
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            SctpTransportPolicy::UdpOnly => {
+                #[cfg(target_os = "linux")]
+                {
+                    udp_linux::UdpSctpListener::bind(local[0], &udp_config(config)?).map(Self::Udp)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = local;
+                    let _ = config;
+                    Err(udp_only_unsupported())
+                }
+            }
+        }
+    }
+
+    fn accept(&self) -> io::Result<(SctpStreamBackend, SocketAddr)> {
+        match self {
+            Self::Native(inner) => inner.accept().map(|(stream, addr)| (SctpStreamBackend::Native(stream), addr)),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.accept().map(|(stream, addr)| (SctpStreamBackend::Udp(stream), addr)),
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Native(inner) => inner.socket_addr(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.local_addr(),
+        }
+    }
+
+    fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        match self {
+            Self::Native(inner) => inner.local_addrs(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.local_addrs(),
+        }
+    }
+
+    fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_init_options(opts),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_init_options(opts),
+        }
+    }
+
+    fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.subscribe_events(mask),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.subscribe_events(mask),
+        }
+    }
+
+    fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_rto_info(info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_rto_info(info),
+        }
+    }
+
+    fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_delayed_sack(info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_delayed_sack(info),
+        }
+    }
+
+    fn set_max_burst(&self, value: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_max_burst(value),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_max_burst(value),
+        }
+    }
+
+    fn set_maxseg(&self, value: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_maxseg(value),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_maxseg(value),
+        }
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_nonblocking(nonblocking),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_nonblocking(nonblocking),
+        }
+    }
+
+    fn take_error(&self) -> io::Result<Option<io::Error>> {
+        match self {
+            Self::Native(inner) => inner.take_error(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.take_error(),
+        }
+    }
+
+    fn duplicate(&self) -> io::Result<Self> {
+        match self {
+            Self::Native(inner) => inner.duplicate().map(Self::Native),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.try_clone().map(Self::Udp),
+        }
+    }
+}
+
+impl SctpSocketBackend {
+    fn bind(local: &[SocketAddr], config: SctpTransportConfig, multi: bool) -> io::Result<Self> {
+        match config.policy {
+            SctpTransportPolicy::NativeOnly => {
+                if multi {
+                    net_imp::SctpSocket::bind_multi(local).map(Self::Native)
+                } else {
+                    net_imp::SctpSocket::bind(local).map(Self::Native)
+                }
+            }
+            SctpTransportPolicy::NativePreferred => {
+                let native = if multi {
+                    net_imp::SctpSocket::bind_multi(local)
+                } else {
+                    net_imp::SctpSocket::bind(local)
+                };
+                match native {
+                    Ok(socket) => Ok(Self::Native(socket)),
+                    Err(err) if is_native_sctp_unsupported(&err) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            udp_linux::UdpSctpSocket::bind(local[0], &udp_config(config)?).map(Self::Udp)
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            let _ = local;
+                            let _ = config;
+                            Err(udp_only_unsupported())
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            SctpTransportPolicy::UdpOnly => {
+                #[cfg(target_os = "linux")]
+                {
+                    udp_linux::UdpSctpSocket::bind(local[0], &udp_config(config)?).map(Self::Udp)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = local;
+                    let _ = config;
+                    Err(udp_only_unsupported())
+                }
+            }
+        }
+    }
+
+    fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        match self {
+            Self::Native(inner) => inner.local_addrs(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.local_addrs(),
+        }
+    }
+
+    fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_init_options(opts),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_init_options(opts),
+        }
+    }
+
+    fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.subscribe_events(mask),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.subscribe_events(mask),
+        }
+    }
+
+    fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_autoclose(seconds),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_autoclose(seconds),
+        }
+    }
+
+    fn send_to_with_info(
+        &self,
+        buf: &[u8],
+        addr: SocketAddr,
+        info: Option<&SctpSendInfo>,
+    ) -> io::Result<usize> {
+        match self {
+            Self::Native(inner) => inner.send_to_with_info(buf, addr, info),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.send_to_with_info(buf, addr, info),
+        }
+    }
+
+    fn assoc_ids(&self) -> io::Result<Vec<i32>> {
+        match self {
+            Self::Native(inner) => inner.assoc_ids(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.assoc_ids(),
+        }
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_nonblocking(nonblocking),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.set_nonblocking(nonblocking),
+        }
+    }
+
+    fn duplicate(&self) -> io::Result<Self> {
+        match self {
+            Self::Native(inner) => inner.duplicate().map(Self::Native),
+            #[cfg(target_os = "linux")]
+            Self::Udp(inner) => inner.try_clone().map(Self::Udp),
+        }
+    }
+}
+
 #[unstable(feature = "sctp", issue = "none")]
 impl SctpStream {
     /// Connects to a single remote SCTP endpoint.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<SctpStream> {
-        net_imp::SctpStream::connect(addr).map(SctpStream)
+        Self::connect_with_config(addr, SctpTransportConfig::default())
+    }
+
+    /// Connects to a single remote SCTP endpoint with an explicit transport policy.
+    pub fn connect_with_config<A: ToSocketAddrs>(
+        addr: A,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpStream> {
+        let addrs = resolve_socket_addrs(addr)?;
+        SctpStreamBackend::connect(&addrs, SctpInitOptions::default(), config, false).map(SctpStream)
     }
 
     /// Connects to a single remote SCTP endpoint after applying `SCTP_INITMSG`.
@@ -395,12 +1241,33 @@ impl SctpStream {
         addr: A,
         opts: SctpInitOptions,
     ) -> io::Result<SctpStream> {
-        net_imp::SctpStream::connect_with_init_options(addr, opts).map(SctpStream)
+        Self::connect_with_init_options_and_config(addr, opts, SctpTransportConfig::default())
+    }
+
+    /// Connects to a single remote SCTP endpoint after applying `SCTP_INITMSG`
+    /// and an explicit transport policy.
+    pub fn connect_with_init_options_and_config<A: ToSocketAddrs>(
+        addr: A,
+        opts: SctpInitOptions,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpStream> {
+        let addrs = resolve_socket_addrs(addr)?;
+        SctpStreamBackend::connect(&addrs, opts, config, false).map(SctpStream)
     }
 
     /// Connects to a remote SCTP endpoint represented by multiple peer addresses.
     pub fn connect_multi(remote: &SctpMultiAddr) -> io::Result<SctpStream> {
-        net_imp::SctpStream::connect_multi(remote.addrs()).map(SctpStream)
+        Self::connect_multi_with_config(remote, SctpTransportConfig::default())
+    }
+
+    /// Connects to a remote SCTP endpoint represented by multiple peer addresses with an
+    /// explicit transport policy.
+    pub fn connect_multi_with_config(
+        remote: &SctpMultiAddr,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpStream> {
+        SctpStreamBackend::connect(remote.addrs(), SctpInitOptions::default(), config, true)
+            .map(SctpStream)
     }
 
     /// Connects to a remote multi-address SCTP endpoint after applying `SCTP_INITMSG`.
@@ -408,17 +1275,43 @@ impl SctpStream {
         remote: &SctpMultiAddr,
         opts: SctpInitOptions,
     ) -> io::Result<SctpStream> {
-        net_imp::SctpStream::connect_multi_with_init_options(remote.addrs(), opts).map(SctpStream)
+        Self::connect_multi_with_init_options_and_config(remote, opts, SctpTransportConfig::default())
+    }
+
+    /// Connects to a remote multi-address SCTP endpoint after applying `SCTP_INITMSG`
+    /// and an explicit transport policy.
+    pub fn connect_multi_with_init_options_and_config(
+        remote: &SctpMultiAddr,
+        opts: SctpInitOptions,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpStream> {
+        SctpStreamBackend::connect(remote.addrs(), opts, config, true).map(SctpStream)
     }
 
     /// Creates an SCTP socket bound to a single local address.
     pub fn bind(local: SocketAddr) -> io::Result<SctpStream> {
-        net_imp::SctpStream::bind(local).map(SctpStream)
+        Self::bind_with_config(local, SctpTransportConfig::default())
+    }
+
+    /// Creates an SCTP socket bound to a single local address with an explicit transport policy.
+    pub fn bind_with_config(
+        local: SocketAddr,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpStream> {
+        SctpStreamBackend::bind(&[local], config, false).map(SctpStream)
     }
 
     /// Creates an SCTP socket bound to multiple local addresses.
     pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpStream> {
-        net_imp::SctpStream::bind_multi(local.addrs()).map(SctpStream)
+        Self::bind_multi_with_config(local, SctpTransportConfig::default())
+    }
+
+    /// Creates an SCTP socket bound to multiple local addresses with an explicit transport policy.
+    pub fn bind_multi_with_config(
+        local: &SctpMultiAddr,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpStream> {
+        SctpStreamBackend::bind(local.addrs(), config, true).map(SctpStream)
     }
 
     /// Returns the primary remote address of this association.
@@ -428,7 +1321,7 @@ impl SctpStream {
 
     /// Returns one local address currently used by this socket.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.0.socket_addr()
+        self.0.local_addr()
     }
 
     /// Returns all remote addresses configured for this association.
@@ -679,12 +1572,29 @@ impl Write for SctpStream {
 impl SctpListener {
     /// Creates an SCTP listener bound to a local address.
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpListener> {
-        net_imp::SctpListener::bind(addr).map(SctpListener)
+        Self::bind_with_config(addr, SctpTransportConfig::default())
+    }
+
+    /// Creates an SCTP listener bound to a local address with an explicit transport policy.
+    pub fn bind_with_config<A: ToSocketAddrs>(
+        addr: A,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpListener> {
+        let addrs = resolve_socket_addrs(addr)?;
+        SctpListenerBackend::bind(&addrs, config, false).map(SctpListener)
     }
 
     /// Creates an SCTP listener bound to multiple local addresses.
     pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpListener> {
-        net_imp::SctpListener::bind_multi(local.addrs()).map(SctpListener)
+        Self::bind_multi_with_config(local, SctpTransportConfig::default())
+    }
+
+    /// Creates an SCTP listener bound to multiple local addresses with an explicit transport policy.
+    pub fn bind_multi_with_config(
+        local: &SctpMultiAddr,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpListener> {
+        SctpListenerBackend::bind(local.addrs(), config, true).map(SctpListener)
     }
 
     /// Accepts a new SCTP association.
@@ -694,7 +1604,7 @@ impl SctpListener {
 
     /// Returns one local address currently used by this listener.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.0.socket_addr()
+        self.0.local_addr()
     }
 
     /// Returns all local addresses configured for this listener.
@@ -757,12 +1667,31 @@ impl SctpListener {
 impl SctpSocket {
     /// Creates an unconnected SCTP socket bound to one local address.
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpSocket> {
-        net_imp::SctpSocket::bind(addr).map(SctpSocket)
+        Self::bind_with_config(addr, SctpTransportConfig::default())
+    }
+
+    /// Creates an unconnected SCTP socket bound to one local address with an explicit
+    /// transport policy.
+    pub fn bind_with_config<A: ToSocketAddrs>(
+        addr: A,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpSocket> {
+        let addrs = resolve_socket_addrs(addr)?;
+        SctpSocketBackend::bind(&addrs, config, false).map(SctpSocket)
     }
 
     /// Creates an unconnected SCTP socket bound to multiple local addresses.
     pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpSocket> {
-        net_imp::SctpSocket::bind_multi(local.addrs()).map(SctpSocket)
+        Self::bind_multi_with_config(local, SctpTransportConfig::default())
+    }
+
+    /// Creates an unconnected SCTP socket bound to multiple local addresses with an explicit
+    /// transport policy.
+    pub fn bind_multi_with_config(
+        local: &SctpMultiAddr,
+        config: SctpTransportConfig,
+    ) -> io::Result<SctpSocket> {
+        SctpSocketBackend::bind(local.addrs(), config, true).map(SctpSocket)
     }
 
     /// Returns all local addresses configured for this socket.
@@ -825,75 +1754,117 @@ impl FusedIterator for SctpIncoming<'_> {}
 
 impl AsInner<net_imp::SctpStream> for SctpStream {
     fn as_inner(&self) -> &net_imp::SctpStream {
-        &self.0
+        match &self.0 {
+            SctpStreamBackend::Native(inner) => inner,
+            #[cfg(target_os = "linux")]
+            SctpStreamBackend::Udp(_) => panic!("UDP-encapsulated SCTP stream has no native inner socket"),
+        }
     }
 }
 
 impl FromInner<net_imp::SctpStream> for SctpStream {
     fn from_inner(inner: net_imp::SctpStream) -> Self {
-        Self(inner)
+        Self(SctpStreamBackend::Native(inner))
     }
 }
 
 impl IntoInner<net_imp::SctpStream> for SctpStream {
     fn into_inner(self) -> net_imp::SctpStream {
-        self.0
+        match self.0 {
+            SctpStreamBackend::Native(inner) => inner,
+            #[cfg(target_os = "linux")]
+            SctpStreamBackend::Udp(_) => panic!("UDP-encapsulated SCTP stream has no native inner socket"),
+        }
     }
 }
 
 impl AsInner<net_imp::SctpListener> for SctpListener {
     fn as_inner(&self) -> &net_imp::SctpListener {
-        &self.0
+        match &self.0 {
+            SctpListenerBackend::Native(inner) => inner,
+            #[cfg(target_os = "linux")]
+            SctpListenerBackend::Udp(_) => {
+                panic!("UDP-encapsulated SCTP listener has no native inner socket")
+            }
+        }
     }
 }
 
 impl FromInner<net_imp::SctpListener> for SctpListener {
     fn from_inner(inner: net_imp::SctpListener) -> Self {
-        Self(inner)
+        Self(SctpListenerBackend::Native(inner))
     }
 }
 
 impl IntoInner<net_imp::SctpListener> for SctpListener {
     fn into_inner(self) -> net_imp::SctpListener {
-        self.0
+        match self.0 {
+            SctpListenerBackend::Native(inner) => inner,
+            #[cfg(target_os = "linux")]
+            SctpListenerBackend::Udp(_) => {
+                panic!("UDP-encapsulated SCTP listener has no native inner socket")
+            }
+        }
     }
 }
 
 impl AsInner<net_imp::SctpSocket> for SctpSocket {
     fn as_inner(&self) -> &net_imp::SctpSocket {
-        &self.0
+        match &self.0 {
+            SctpSocketBackend::Native(inner) => inner,
+            #[cfg(target_os = "linux")]
+            SctpSocketBackend::Udp(_) => panic!("UDP-encapsulated SCTP socket has no native inner socket"),
+        }
     }
 }
 
 impl FromInner<net_imp::SctpSocket> for SctpSocket {
     fn from_inner(inner: net_imp::SctpSocket) -> Self {
-        Self(inner)
+        Self(SctpSocketBackend::Native(inner))
     }
 }
 
 impl IntoInner<net_imp::SctpSocket> for SctpSocket {
     fn into_inner(self) -> net_imp::SctpSocket {
-        self.0
+        match self.0 {
+            SctpSocketBackend::Native(inner) => inner,
+            #[cfg(target_os = "linux")]
+            SctpSocketBackend::Udp(_) => panic!("UDP-encapsulated SCTP socket has no native inner socket"),
+        }
     }
 }
 
 #[unstable(feature = "sctp", issue = "none")]
 impl fmt::Debug for SctpStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        match &self.0 {
+            SctpStreamBackend::Native(inner) => inner.fmt(f),
+            #[cfg(target_os = "linux")]
+            SctpStreamBackend::Udp(_) => f.debug_struct("SctpStream").field("transport", &"udp").finish(),
+        }
     }
 }
 
 #[unstable(feature = "sctp", issue = "none")]
 impl fmt::Debug for SctpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        match &self.0 {
+            SctpListenerBackend::Native(inner) => inner.fmt(f),
+            #[cfg(target_os = "linux")]
+            SctpListenerBackend::Udp(_) => {
+                f.debug_struct("SctpListener").field("transport", &"udp").finish()
+            }
+        }
     }
 }
 
 #[unstable(feature = "sctp", issue = "none")]
 impl fmt::Debug for SctpSocket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        match &self.0 {
+            SctpSocketBackend::Native(inner) => inner.fmt(f),
+            #[cfg(target_os = "linux")]
+            SctpSocketBackend::Udp(_) => f.debug_struct("SctpSocket").field("transport", &"udp").finish(),
+        }
     }
 }

@@ -16,17 +16,24 @@ rust-version = "1.85"
 [features]
 # Expose internals for fuzz testing. Not part of the public API.
 _fuzz = []
-rustc-dep-of-std = ["dep:alloc", "dep:core", "dep:std"]
+rustc-dep-of-std = [
+    "dep:alloc",
+    "dep:core",
+    "bytes/rustc-dep-of-std",
+    "crc/rustc-dep-of-std",
+    "log/rustc-dep-of-std",
+    "rustc-hash/rustc-dep-of-std",
+    "slab/rustc-dep-of-std",
+]
 
 [dependencies]
+alloc = { version = "1.0", optional = true, package = "rustc-std-workspace-alloc" }
 bytes = { version = "1.5.0", default-features = false }
+core = { version = "1.0", optional = true, package = "rustc-std-workspace-core" }
 rustc-hash = { version = "2.1.1", default-features = false }
 slab = { version = "0.4.9", default-features = false }
 log = { version = "0.4.21", default-features = false }
-crc = "3.4.0"
-alloc = { version = "1.0", optional = true, package = "rustc-std-workspace-alloc" }
-core = { version = "1.0", optional = true, package = "rustc-std-workspace-core" }
-std = { version = "1.0", optional = true, package = "rustc-std-workspace-std" }
+crc = { version = "3.4.0", default-features = false }
 
 [dev-dependencies]
 assert_matches = "1.5.0"

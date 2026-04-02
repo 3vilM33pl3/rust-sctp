@@ -36,9 +36,10 @@ pub use self::sctp::{
     SctpAssocStatus, SctpAuthKey, SctpDelayedSackInfo, SctpEventMask, SctpInitOptions,
     SctpListener, SctpMultiAddr, SctpNextInfo, SctpNotification, SctpPrInfo, SctpPrPolicy,
     SctpReceive, SctpRecvInfo, SctpRtoInfo, SctpScheduler, SctpSendInfo, SctpSocket, SctpStream,
-    SCTP_PR_NONE, SCTP_PR_PRIORITY, SCTP_PR_RTX, SCTP_PR_TTL, SCTP_SCHEDULER_FC,
-    SCTP_SCHEDULER_FCFS, SCTP_SCHEDULER_PRIORITY, SCTP_SCHEDULER_RR, SCTP_SCHEDULER_WFQ,
-    SCTP_STREAM_RESET_INCOMING, SCTP_STREAM_RESET_OUTGOING, SCTP_UNORDERED,
+    SctpTransportConfig, SctpTransportPolicy, SctpUdpConfig, SCTP_PR_NONE, SCTP_PR_PRIORITY,
+    SCTP_PR_RTX, SCTP_PR_TTL, SCTP_SCHEDULER_FC, SCTP_SCHEDULER_FCFS, SCTP_SCHEDULER_PRIORITY,
+    SCTP_SCHEDULER_RR, SCTP_SCHEDULER_WFQ, SCTP_STREAM_RESET_INCOMING,
+    SCTP_STREAM_RESET_OUTGOING, SCTP_UNORDERED,
 };
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::socket_addr::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};

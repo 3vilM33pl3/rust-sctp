@@ -40,21 +40,26 @@ use timer::{ACK_INTERVAL, RtoManager, Timer, TimerTable};
 use crate::association::stream::RecvSendState;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+#[cfg(feature = "rustc-dep-of-std")]
+use alloc::collections::BTreeMap as HashMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use bytes::Bytes;
 use core::fmt;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use core::hash::BuildHasherDefault;
 use core::net::{IpAddr, SocketAddr};
 use core::str::FromStr;
 use core::time::Duration;
 use log::{debug, error, trace, warn};
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use rustc_hash::FxHasher;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use std::collections::HashMap;
-use std::time::Instant;
 
+use crate::Instant;
 pub(crate) mod state;
 pub(crate) mod stats;
 pub(crate) mod stream;
@@ -63,6 +68,9 @@ mod timer;
 #[cfg(test)]
 mod association_test;
 
+#[cfg(feature = "rustc-dep-of-std")]
+type FxHashMap<K, V> = HashMap<K, V>;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// Reasons why an association might be lost
@@ -94,7 +102,7 @@ impl fmt::Display for AssociationError {
     }
 }
 
-impl std::error::Error for AssociationError {}
+impl core::error::Error for AssociationError {}
 
 impl From<Error> for AssociationError {
     fn from(value: Error) -> Self {

@@ -3,16 +3,22 @@ mod endpoint_test;
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+#[cfg(feature = "rustc-dep-of-std")]
+use alloc::collections::BTreeMap as HashMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+#[cfg(feature = "rustc-dep-of-std")]
+use core::error;
 use core::fmt;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use core::hash::BuildHasherDefault;
 use core::iter;
 use core::net::{IpAddr, SocketAddr};
 use core::ops::{Index, IndexMut};
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use std::collections::HashMap;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use std::error;
-use std::time::Instant;
 
 use crate::chunk::{chunk_init::ChunkInit, chunk_type::CT_INIT};
 use crate::config::MAX_SNAP_INIT_BYTES;
@@ -22,14 +28,19 @@ use crate::shared::AssociationEvent;
 use crate::shared::{AssociationEventInner, AssociationId};
 use crate::shared::{EndpointEvent, EndpointEventInner};
 use crate::util::{AssociationIdGenerator, RandomAssociationIdGenerator};
+use crate::Instant;
 use crate::{EcnCodepoint, Payload, Transmit};
 use crate::{association::Association, chunk::Chunk};
 
 use bytes::Bytes;
 use log::{debug, trace, warn};
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use rustc_hash::FxHasher;
 use slab::Slab;
 
+#[cfg(feature = "rustc-dep-of-std")]
+type FxHashMap<K, V> = HashMap<K, V>;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// The main entry point to the library
@@ -199,10 +210,20 @@ impl Endpoint {
     /// SDP `a=sctp-init`), and then calls `connect` with `with_snap(local, remote)`.
     ///
     /// See [draft-hancke-tsvwg-snap-01](https://datatracker.ietf.org/doc/draft-hancke-tsvwg-snap/).
+    #[cfg(not(feature = "rustc-dep-of-std"))]
     pub fn connect(
         &mut self,
         config: ClientConfig,
         remote: SocketAddr,
+    ) -> Result<(AssociationHandle, Association), ConnectError> {
+        self.connect_at(config, remote, Instant::now())
+    }
+
+    pub fn connect_at(
+        &mut self,
+        config: ClientConfig,
+        remote: SocketAddr,
+        now: Instant,
     ) -> Result<(AssociationHandle, Association), ConnectError> {
         if self.is_full() {
             return Err(ConnectError::TooManyAssociations);
@@ -240,7 +261,7 @@ impl Endpoint {
                     local_aid,
                     remote,
                     None,
-                    Instant::now(),
+                    now,
                     None,
                     config.transport,
                     source_port,

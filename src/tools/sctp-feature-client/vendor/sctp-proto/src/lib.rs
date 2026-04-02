@@ -52,6 +52,7 @@
 #[macro_use]
 extern crate alloc;
 
+#[cfg(not(feature = "rustc-dep-of-std"))]
 extern crate std;
 
 use alloc::vec::Vec;
@@ -59,7 +60,6 @@ use bytes::Bytes;
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
 use core::ops;
-use std::time::Instant;
 
 mod association;
 pub use crate::association::Association;
@@ -77,6 +77,9 @@ pub use crate::config::{
     ClientConfig, DEFAULT_SCTP_PORT, EndpointConfig, MAX_SNAP_INIT_BYTES, ServerConfig,
     TransportConfig, generate_snap_token,
 };
+
+mod instant;
+pub use crate::instant::Instant;
 
 mod endpoint;
 pub use crate::endpoint::{

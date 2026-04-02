@@ -820,6 +820,7 @@ pub struct SctpStream {
 
 #[cfg(target_os = "linux")]
 impl SctpStream {
+    #[allow(dead_code)]
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<SctpStream> {
         init();
         each_addr(addr, |addr| {
@@ -861,6 +862,7 @@ impl SctpStream {
         })
     }
 
+    #[allow(dead_code)]
     pub fn connect_multi(addrs: &[SocketAddr]) -> io::Result<SctpStream> {
         init();
         if addrs.is_empty() {

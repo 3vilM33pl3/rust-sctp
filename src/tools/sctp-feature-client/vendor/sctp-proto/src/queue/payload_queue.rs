@@ -2,8 +2,11 @@ use crate::chunk::chunk_payload_data::ChunkPayloadData;
 use crate::chunk::chunk_selective_ack::GapAckBlock;
 use crate::util::*;
 
+#[cfg(feature = "rustc-dep-of-std")]
+use alloc::collections::BTreeMap as HashMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(not(feature = "rustc-dep-of-std"))]
 use std::collections::HashMap;
 
 #[derive(Default, Debug)]

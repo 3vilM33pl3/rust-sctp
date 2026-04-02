@@ -1,6 +1,6 @@
 use super::{chunk_header::*, chunk_type::*, *};
 
-use std::time::Instant;
+use crate::Instant;
 
 pub(crate) const PAYLOAD_DATA_ENDING_FRAGMENT_BITMASK: u8 = 1;
 pub(crate) const PAYLOAD_DATA_BEGINING_FRAGMENT_BITMASK: u8 = 2;
