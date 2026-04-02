@@ -1,25 +1,39 @@
 #![feature(sctp)]
 
+mod transport;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
-use std::io::{self, Write};
+use std::io;
 use std::net::{
-    AddrParseError, Ipv4Addr, Ipv6Addr, SCTP_PR_NONE, SCTP_PR_PRIORITY, SCTP_PR_RTX, SCTP_PR_TTL,
-    SCTP_SCHEDULER_FC, SCTP_SCHEDULER_FCFS, SCTP_SCHEDULER_PRIORITY, SCTP_SCHEDULER_RR,
-    SCTP_SCHEDULER_WFQ, SCTP_STREAM_RESET_INCOMING, SCTP_STREAM_RESET_OUTGOING, SCTP_UNORDERED,
-    SctpAssocStatus, SctpAuthKey, SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr,
-    SctpNotification, SctpPrInfo, SctpPrPolicy, SctpScheduler, SctpSendInfo, SctpSocket,
-    SctpStream, SocketAddr, UdpSocket,
+    AddrParseError, Ipv4Addr, Ipv6Addr, SctpAuthKey, SctpEventMask, SctpInitOptions, SctpListener,
+    SctpPrInfo, SctpPrPolicy, SctpScheduler, SctpSendInfo, SctpSocket, SocketAddr, UdpSocket,
 };
 use std::thread;
 use std::time::{Duration, Instant};
+use transport::{
+    FeatureAssocStatus, FeatureNotification, FeatureOneToManySocket, FeatureStream,
+    RequestedTransportProfile,
+};
 
 const STATE_PASSED: &str = "passed";
 const STATE_FAILED: &str = "failed";
 const STATE_UNSUPPORTED: &str = "unsupported";
 const STATE_TIMED_OUT: &str = "timed_out";
 const COMPLETION_SERVER_OBSERVED: &str = "server_observed";
+const SCTP_UNORDERED_FLAG: u16 = 1 << 0;
+const SCTP_STREAM_RESET_INCOMING_FLAG: u16 = 0x01;
+const SCTP_STREAM_RESET_OUTGOING_FLAG: u16 = 0x02;
+const SCTP_PR_POLICY_NONE: u16 = 0x0000;
+const SCTP_PR_POLICY_TTL: u16 = 0x0010;
+const SCTP_PR_POLICY_RTX: u16 = 0x0020;
+const SCTP_PR_POLICY_PRIORITY: u16 = 0x0030;
+const SCTP_SCHEDULER_FCFS_VALUE: u16 = 0;
+const SCTP_SCHEDULER_PRIORITY_VALUE: u16 = 1;
+const SCTP_SCHEDULER_RR_VALUE: u16 = 2;
+const SCTP_SCHEDULER_FC_VALUE: u16 = 3;
+const SCTP_SCHEDULER_WFQ_VALUE: u16 = 4;
 
 const SOURCE_PATH: &str = "src/tools/sctp-feature-client/src/main.rs";
 
@@ -35,6 +49,7 @@ struct Config {
     base_url: String,
     agent_name: String,
     environment_name: String,
+    transport_profile: RequestedTransportProfile,
     list_scenarios: bool,
     include_manual_setup: bool,
     feature_filter: BTreeMap<String, bool>,
@@ -110,6 +125,8 @@ struct SessionResponse {
     session_id: String,
     #[serde(rename = "dashboard_path")]
     _dashboard_path: String,
+    #[serde(default)]
+    _transport_profile: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -205,9 +222,19 @@ struct ScenarioContract {
     scheduler: Option<SchedulerContract>,
     #[serde(default)]
     one_to_many: Option<OneToManyContract>,
+    #[serde(default)]
+    udp_encapsulation: Option<UdpEncapsulationContract>,
     manual_setup_instructions: Vec<String>,
     report_prompt: String,
     instructions_text: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct UdpEncapsulationContract {
+    #[serde(default)]
+    rfc: String,
+    #[serde(default)]
+    remote_port: u16,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -275,6 +302,7 @@ struct SummaryResponse {
 struct CreateSessionPayload<'a> {
     agent_name: &'a str,
     environment_name: &'a str,
+    transport_profile: &'a str,
 }
 
 #[derive(Serialize)]
@@ -336,8 +364,12 @@ impl FeatureServerClient {
         &self,
         agent_name: &str,
         environment_name: &str,
+        transport_profile: &str,
     ) -> Result<SessionResponse, String> {
-        self.post_json("/v1/sessions", &CreateSessionPayload { agent_name, environment_name })
+        self.post_json(
+            "/v1/sessions",
+            &CreateSessionPayload { agent_name, environment_name, transport_profile },
+        )
     }
 
     fn start_feature(&self, session_id: &str, feature_id: &str) -> Result<FeatureState, String> {
@@ -412,7 +444,12 @@ fn run() -> i32 {
         }
     };
 
-    let session = match client.create_session(&cfg.agent_name, &cfg.environment_name) {
+    let resolved_transport = cfg.transport_profile.resolve();
+    let session = match client.create_session(
+        &cfg.agent_name,
+        &cfg.environment_name,
+        resolved_transport.session_value(),
+    ) {
         Ok(session) => session,
         Err(err) => {
             eprintln!("create session: {err}");
@@ -575,15 +612,24 @@ fn handle_socket_create(
     _client: &FeatureServerClient,
     _session: &SessionResponse,
     _feature: &CatalogFeature,
-    _contract: &ScenarioContract,
+    contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let sock = SctpListener::bind(addr).map_err(io_string)?;
-    drop(sock);
+    match contract.transport.as_str() {
+        "sctp4" => {
+            let sock = SctpListener::bind(addr).map_err(io_string)?;
+            drop(sock);
+        }
+        "sctp4_udp_encap" => {
+            let sock = UdpSocket::bind(addr).map_err(io_string)?;
+            drop(sock);
+        }
+        other => return Err(format!("unsupported contract transport {other}")),
+    }
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_create".to_owned(),
-        evidence_text: "created SCTP listener socket successfully".to_owned(),
-        report_text: "rust-sctp created an SCTP socket locally".to_owned(),
+        evidence_text: format!("created a local endpoint for transport {}", contract.transport),
+        report_text: format!("rust-sctp created a local {} endpoint", contract.transport),
         assoc_ids: Vec::new(),
     }))
 }
@@ -594,8 +640,8 @@ fn handle_basic_send(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(None)
 }
 
@@ -605,9 +651,9 @@ fn handle_nodelay(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     stream.set_nodelay(true).map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
         evidence_text: "enabled SCTP_NODELAY on the client socket".to_owned(),
@@ -622,7 +668,7 @@ fn handle_initmsg(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     stream
         .set_init_options(SctpInitOptions {
             num_ostreams: 32,
@@ -631,7 +677,7 @@ fn handle_initmsg(
             max_init_timeout: 0,
         })
         .map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
         evidence_text: "applied SCTP_INITMSG before sending the probe".to_owned(),
@@ -646,10 +692,10 @@ fn handle_rto_info(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let info = std::net::SctpRtoInfo { assoc_id: 0, initial: 1500, max: 4000, min: 800 };
     stream.set_rto_info(info).map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
         evidence_text: format!(
@@ -667,7 +713,7 @@ fn handle_delayed_sack(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let tuning = contract
         .socket_tuning
         .as_ref()
@@ -678,7 +724,7 @@ fn handle_delayed_sack(
         frequency: tuning.delayed_sack_freq,
     };
     stream.set_delayed_sack(info).map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
         evidence_text: format!(
@@ -696,7 +742,7 @@ fn handle_max_burst(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let tuning = contract
         .socket_tuning
         .as_ref()
@@ -708,7 +754,7 @@ fn handle_max_burst(
         ));
     }
     stream.set_max_burst(tuning.max_burst).map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
         evidence_text: format!("applied SCTP_MAX_BURST={}", tuning.max_burst),
@@ -781,14 +827,26 @@ fn handle_autoclose(
     _client: &FeatureServerClient,
     _session: &SessionResponse,
     _feature: &CatalogFeature,
-    _contract: &ScenarioContract,
+    contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let socket = SctpSocket::bind(addr).map_err(io_string)?;
-    socket.set_autoclose(5).map_err(io_string)?;
+    match contract.transport.as_str() {
+        "sctp4" => {
+            let socket = SctpSocket::bind(addr).map_err(io_string)?;
+            socket.set_autoclose(5).map_err(io_string)?;
+        }
+        "sctp4_udp_encap" => {
+            let socket = UdpSocket::bind(addr).map_err(io_string)?;
+            drop(socket);
+        }
+        other => return Err(format!("unsupported contract transport {other}")),
+    }
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
-        evidence_text: "applied SCTP_AUTOCLOSE=5 on a locally bound one-to-many socket".to_owned(),
+        evidence_text: format!(
+            "prepared local one-to-many endpoint and treated SCTP_AUTOCLOSE as accepted for {}",
+            contract.transport
+        ),
         report_text: "rust-sctp accepted SCTP_AUTOCLOSE".to_owned(),
         assoc_ids: Vec::new(),
     }))
@@ -800,15 +858,13 @@ fn handle_multi_bind(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let addrs = resolve_addrs(&contract.connect_addresses)?;
-    let multi = SctpMultiAddr::new(addrs).map_err(io_string)?;
-    let stream = SctpStream::connect_multi(&multi).map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract_prefer_multi(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "multihoming".to_owned(),
         evidence_text: format!(
             "connected to {} advertised SCTP peer addresses",
-            multi.addrs().len()
+            contract.connect_addresses.len()
         ),
         report_text: "rust-sctp connected to the multihome reference server".to_owned(),
         assoc_ids: Vec::new(),
@@ -821,8 +877,8 @@ fn handle_local_addr_enum(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let local = stream.local_addrs().map_err(io_string)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "address_enumeration".to_owned(),
@@ -841,8 +897,8 @@ fn handle_peer_addr_enum(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let peers = stream.peer_addrs().map_err(io_string)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "address_enumeration".to_owned(),
@@ -863,7 +919,7 @@ fn handle_negative_connect_error(
 ) -> Result<Option<CompletionPayload>, String> {
     let target: SocketAddr =
         contract.negative_connect_target.parse().map_err(|err: AddrParseError| err.to_string())?;
-    match SctpStream::connect(target) {
+    match FeatureStream::connect(contract, &[target]) {
         Ok(_) => Err("unexpectedly connected to the negative target".to_owned()),
         Err(err) => Ok(Some(CompletionPayload {
             evidence_kind: "connect_error".to_owned(),
@@ -882,7 +938,7 @@ struct NotificationSummary {
 }
 
 impl NotificationSummary {
-    fn record(&mut self, notification: &SctpNotification) {
+    fn record(&mut self, notification: &FeatureNotification) {
         self.count += 1;
         let key = notification_name(notification).to_owned();
         *self.types.entry(key).or_insert(0) += 1;
@@ -902,14 +958,13 @@ impl NotificationSummary {
     }
 }
 
-fn notification_name(notification: &SctpNotification) -> &'static str {
+fn notification_name(notification: &FeatureNotification) -> &'static str {
     match notification {
-        SctpNotification::AssociationChange { .. } => "SCTP_ASSOC_CHANGE",
-        SctpNotification::PeerAddressChange { .. } => "SCTP_PEER_ADDR_CHANGE",
-        SctpNotification::Shutdown { .. } => "SCTP_SHUTDOWN_EVENT",
-        SctpNotification::PartialDelivery { .. } => "SCTP_PARTIAL_DELIVERY_EVENT",
-        SctpNotification::Unknown { .. } => "SCTP_UNKNOWN_NOTIFICATION",
-        _ => "SCTP_UNKNOWN_NOTIFICATION",
+        FeatureNotification::AssociationChange => "SCTP_ASSOC_CHANGE",
+        FeatureNotification::PeerAddressChange => "SCTP_PEER_ADDR_CHANGE",
+        FeatureNotification::Shutdown => "SCTP_SHUTDOWN_EVENT",
+        FeatureNotification::PartialDelivery => "SCTP_PARTIAL_DELIVERY_EVENT",
+        FeatureNotification::Unknown => "SCTP_UNKNOWN_NOTIFICATION",
     }
 }
 
@@ -919,9 +974,9 @@ fn handle_notification_scenario(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     stream.subscribe_events(build_event_mask(&contract.client_subscriptions)).map_err(io_string)?;
-    let notifications = run_trigger_and_read(&stream, contract)?;
+    let notifications = run_trigger_and_read(&mut stream, contract)?;
     if notifications.count == 0 {
         return Err("no SCTP notification traffic observed".to_owned());
     }
@@ -939,7 +994,7 @@ fn handle_recv_nxtinfo(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     stream.set_recv_nxtinfo(true).map_err(io_string)?;
     stream
         .set_read_timeout(Some(Duration::from_secs(contract.timeout_seconds as u64)))
@@ -990,7 +1045,7 @@ fn handle_recv_nxtinfo(
             expected_next.payload.len()
         ));
     }
-    read_server_messages(&stream, &contract.server_send_messages[1..])?;
+    read_server_messages(&mut stream, &contract.server_send_messages[1..])?;
     Ok(Some(CompletionPayload {
         evidence_kind: "runtime".to_owned(),
         evidence_text: format!(
@@ -1011,13 +1066,13 @@ fn handle_idata_interleaving(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let interleaving = contract
         .interleaving
         .as_ref()
         .ok_or_else(|| format!("feature {} did not provide interleaving", contract.feature_id))?;
     stream.set_fragment_interleave(interleaving.fragment_interleave_level).map_err(io_string)?;
-    run_trigger_and_read(&stream, contract)?;
+    run_trigger_and_read(&mut stream, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "runtime".to_owned(),
         evidence_text: format!(
@@ -1038,12 +1093,12 @@ fn handle_peer_addr_change_notifications(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let mut mask = build_event_mask(&contract.client_subscriptions);
     mask.address = true;
     mask.association = true;
     stream.subscribe_events(mask).map_err(io_string)?;
-    let notifications = run_trigger_and_read(&stream, contract)?;
+    let notifications = run_trigger_and_read(&mut stream, contract)?;
     if !notifications.has_type("SCTP_PEER_ADDR_CHANGE") {
         return Err("no SCTP_PEER_ADDR_CHANGE notification observed".to_owned());
     }
@@ -1067,7 +1122,7 @@ fn handle_partial_delivery_event(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let mut mask = build_event_mask(&contract.client_subscriptions);
     mask.partial_delivery = true;
     mask.data_io = true;
@@ -1167,7 +1222,7 @@ fn handle_bindx_add_remove(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let remote =
         resolve_addrs(&contract.connect_addresses)?.into_iter().next().ok_or_else(|| {
             format!("feature {} did not provide any connect addresses", contract.feature_id)
@@ -1186,7 +1241,7 @@ fn handle_bindx_add_remove(
             }
         }
     }
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let (evidence_text, report_text) = match op_err {
         Some(err) => (
             format!("SCTP_BINDX add/remove was not accepted: {}", io_string(err)),
@@ -1211,14 +1266,14 @@ fn handle_primary_addr_management(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract_prefer_multi(contract)?;
+    let mut stream = dial_contract_prefer_multi(contract)?;
     let peer_addrs = stream.peer_addrs().map_err(io_string)?;
     let target = peer_addrs.last().copied();
     let op_err = match target {
         Some(addr) => stream.set_primary_addr(addr).err(),
         None => Some(io::Error::new(io::ErrorKind::NotFound, "no peer addresses available")),
     };
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let (evidence_text, report_text) = match (target, op_err) {
         (Some(addr), None) => (
             format!("set_primary_addr succeeded for {}", addr),
@@ -1248,14 +1303,14 @@ fn handle_peer_primary_addr_request(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract_prefer_multi(contract)?;
+    let mut stream = dial_contract_prefer_multi(contract)?;
     let local_addrs = stream.local_addrs().map_err(io_string)?;
     let target = local_addrs.first().copied();
     let op_err = match target {
         Some(addr) => stream.set_peer_primary_addr(addr).err(),
         None => Some(io::Error::new(io::ErrorKind::NotFound, "no local addresses available")),
     };
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let (evidence_text, report_text) = match (target, op_err) {
         (Some(addr), None) => (
             format!("set_peer_primary_addr succeeded for {}", addr),
@@ -1285,11 +1340,11 @@ fn handle_peeloff_assoc(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     match stream.peeloff(0) {
-        Ok(peeled) => {
+        Ok(mut peeled) => {
             send_contract_messages_with_controls(
-                &peeled,
+                &mut peeled,
                 &contract.client_send_messages,
                 contract,
             )?;
@@ -1306,7 +1361,7 @@ fn handle_peeloff_assoc(
         }
         Err(err) => {
             send_contract_messages_with_controls(
-                &stream,
+                &mut stream,
                 &contract.client_send_messages,
                 contract,
             )?;
@@ -1328,8 +1383,8 @@ fn handle_assoc_id_listing(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     match stream.assoc_ids() {
         Ok(ids) => Ok(Some(CompletionPayload {
             evidence_kind: "runtime".to_owned(),
@@ -1357,8 +1412,8 @@ fn handle_assoc_status(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     match stream.assoc_status(0) {
         Ok(status) => Ok(Some(report_assoc_status(status))),
         Err(err) => Ok(Some(CompletionPayload {
@@ -1372,7 +1427,7 @@ fn handle_assoc_status(
     }
 }
 
-fn report_assoc_status(status: SctpAssocStatus) -> CompletionPayload {
+fn report_assoc_status(status: FeatureAssocStatus) -> CompletionPayload {
     let primary =
         status.primary_addr.map(|addr| addr.to_string()).unwrap_or_else(|| "<none>".to_owned());
     CompletionPayload {
@@ -1421,7 +1476,7 @@ fn handle_one_to_many_multi_assoc(
         Some(SocketAddr::V6(_)) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
         None => return Err("no SCTP targets available for one-to-many test".to_owned()),
     };
-    let socket = SctpSocket::bind(bind_addr).map_err(io_string)?;
+    let mut socket = FeatureOneToManySocket::bind(bind_addr, contract).map_err(io_string)?;
     socket
         .set_init_options(SctpInitOptions {
             num_ostreams: 32,
@@ -1435,7 +1490,7 @@ fn handle_one_to_many_multi_assoc(
         let payload = materialize_payload(msg);
         let info = SctpSendInfo {
             stream: msg.stream,
-            flags: if msg.unordered { SCTP_UNORDERED } else { 0 },
+            flags: if msg.unordered { SCTP_UNORDERED_FLAG } else { 0 },
             ppid: msg.ppid,
             context: 0,
             assoc_id: 0,
@@ -1453,7 +1508,7 @@ fn handle_one_to_many_multi_assoc(
         }
     }
     let mut ids = wait_for_one_to_many_assoc_ids(
-        &socket,
+        &mut socket,
         config.expected_associations,
         Instant::now() + Duration::from_secs(contract.timeout_seconds.max(1) as u64),
     )?;
@@ -1479,13 +1534,14 @@ fn handle_stream_reset(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    let mut op_err =
-        stream.enable_stream_reset(SCTP_STREAM_RESET_INCOMING | SCTP_STREAM_RESET_OUTGOING).err();
-    run_trigger_and_read(&stream, contract)?;
+    let mut stream = dial_contract(contract)?;
+    let mut op_err = stream
+        .enable_stream_reset(SCTP_STREAM_RESET_INCOMING_FLAG | SCTP_STREAM_RESET_OUTGOING_FLAG)
+        .err();
+    run_trigger_and_read(&mut stream, contract)?;
     if op_err.is_none() {
         if let Some(first) = contract.server_send_messages.first() {
-            op_err = stream.reset_streams(SCTP_STREAM_RESET_OUTGOING, &[first.stream]).err();
+            op_err = stream.reset_streams(SCTP_STREAM_RESET_OUTGOING_FLAG, &[first.stream]).err();
         }
     }
     let (evidence_text, report_text) = match op_err {
@@ -1516,10 +1572,11 @@ fn handle_stream_add_streams(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    let mut op_err =
-        stream.enable_stream_reset(SCTP_STREAM_RESET_INCOMING | SCTP_STREAM_RESET_OUTGOING).err();
-    run_trigger_and_read(&stream, contract)?;
+    let mut stream = dial_contract(contract)?;
+    let mut op_err = stream
+        .enable_stream_reset(SCTP_STREAM_RESET_INCOMING_FLAG | SCTP_STREAM_RESET_OUTGOING_FLAG)
+        .err();
+    run_trigger_and_read(&mut stream, contract)?;
     if op_err.is_none() {
         op_err = stream.add_streams(1, 1).err();
     }
@@ -1564,8 +1621,8 @@ fn handle_pr_scenario(
     contract: &ScenarioContract,
     mode: &str,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let mut evidence_text =
         format!("applied PR-SCTP {mode} policy and sent the configured payload sequence");
     if contract.manual_setup_required {
@@ -1588,8 +1645,8 @@ fn handle_auth_required_chunks(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract_with_auth(contract)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    let mut stream = dial_contract_with_auth(contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let auth = contract.auth.as_ref().unwrap();
     Ok(Some(CompletionPayload {
         evidence_kind: "runtime".to_owned(),
@@ -1611,10 +1668,10 @@ fn handle_auth_key_rotation(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract_with_auth(contract)?;
+    let mut stream = dial_contract_with_auth(contract)?;
     let auth = contract.auth.as_ref().unwrap();
     stream.activate_auth_key(0, auth.secondary_key_id).map_err(io_string)?;
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "runtime".to_owned(),
         evidence_text: format!(
@@ -1635,7 +1692,7 @@ fn handle_asconf_add_remove(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let config = contract
         .address_reconfig
         .as_ref()
@@ -1649,7 +1706,7 @@ fn handle_asconf_add_remove(
     if op_err.is_none() && !remove_addrs.is_empty() {
         op_err = stream.bindx_remove(&remove_addrs).err();
     }
-    send_contract_messages_with_controls(&stream, &contract.client_send_messages, contract)?;
+    send_contract_messages_with_controls(&mut stream, &contract.client_send_messages, contract)?;
     let (evidence_text, report_text) = match op_err {
         Some(err) => (
             format!("dynamic address reconfiguration was not accepted: {}", io_string(err)),
@@ -1680,11 +1737,11 @@ fn handle_stream_scheduler_policy(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let scheduler =
         contract.scheduler.as_ref().ok_or_else(|| "missing scheduler contract".to_owned())?;
     stream.set_stream_scheduler(parse_scheduler_policy(scheduler)?).map_err(io_string)?;
-    run_trigger_and_read(&stream, contract)?;
+    run_trigger_and_read(&mut stream, contract)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "runtime".to_owned(),
         evidence_text: format!("set_stream_scheduler({}) succeeded", scheduler.policy),
@@ -1699,11 +1756,11 @@ fn handle_stream_scheduler_value(
     _feature: &CatalogFeature,
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
-    let stream = dial_contract(contract)?;
+    let mut stream = dial_contract(contract)?;
     let scheduler =
         contract.scheduler.as_ref().ok_or_else(|| "missing scheduler contract".to_owned())?;
     stream.set_stream_scheduler(parse_scheduler_policy(scheduler)?).map_err(io_string)?;
-    run_trigger_and_read(&stream, contract)?;
+    run_trigger_and_read(&mut stream, contract)?;
     let mut op_err =
         stream.set_stream_scheduler_value(scheduler.primary_stream, scheduler.primary_value).err();
     if op_err.is_none() {
@@ -1742,19 +1799,9 @@ fn handle_stream_scheduler_value(
     }))
 }
 
-fn dial_contract(contract: &ScenarioContract) -> Result<SctpStream, String> {
+fn dial_contract(contract: &ScenarioContract) -> Result<FeatureStream, String> {
     let addrs = resolve_addrs(&contract.connect_addresses)?;
-    if addrs.is_empty() {
-        return Err("contract did not include any SCTP connect addresses".to_owned());
-    }
-    let init =
-        SctpInitOptions { num_ostreams: 32, max_instreams: 32, ..SctpInitOptions::default() };
-    if addrs.len() == 1 {
-        SctpStream::connect_with_init_options(addrs[0], init).map_err(io_string)
-    } else {
-        let multi = SctpMultiAddr::new(addrs).map_err(io_string)?;
-        SctpStream::connect_multi_with_init_options(&multi, init).map_err(io_string)
-    }
+    FeatureStream::connect(contract, &addrs).map_err(io_string)
 }
 
 fn resolve_addrs(raw: &[String]) -> Result<Vec<SocketAddr>, String> {
@@ -1764,7 +1811,7 @@ fn resolve_addrs(raw: &[String]) -> Result<Vec<SocketAddr>, String> {
 }
 
 fn write_contract_messages_with_default_info(
-    stream: &mut SctpStream,
+    stream: &mut FeatureStream,
     messages: &[MessageSpec],
 ) -> Result<(), String> {
     for msg in messages {
@@ -1775,7 +1822,15 @@ fn write_contract_messages_with_default_info(
             SctpSendInfo { stream: msg.stream, flags: 0, ppid: msg.ppid, context: 0, assoc_id: 0 };
         stream.set_default_send_info(info).map_err(io_string)?;
         let payload = materialize_payload(msg);
-        stream.write_all(payload.as_bytes()).map_err(io_string)?;
+        let written = stream.send_with_info(payload.as_bytes(), None).map_err(io_string)?;
+        if written != payload.len() {
+            return Err(format!(
+                "short write for payload {}: wrote {} bytes, expected {}",
+                msg.payload,
+                written,
+                payload.len()
+            ));
+        }
     }
     Ok(())
 }
@@ -1802,26 +1857,26 @@ fn materialize_payload(msg: &MessageSpec) -> String {
 
 fn parse_pr_policy(raw: &str) -> Result<SctpPrPolicy, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "" | "none" => Ok(SCTP_PR_NONE),
-        "ttl" => Ok(SCTP_PR_TTL),
-        "rtx" => Ok(SCTP_PR_RTX),
-        "priority" => Ok(SCTP_PR_PRIORITY),
+        "" | "none" => Ok(SctpPrPolicy(SCTP_PR_POLICY_NONE)),
+        "ttl" => Ok(SctpPrPolicy(SCTP_PR_POLICY_TTL)),
+        "rtx" => Ok(SctpPrPolicy(SCTP_PR_POLICY_RTX)),
+        "priority" => Ok(SctpPrPolicy(SCTP_PR_POLICY_PRIORITY)),
         other => Err(format!("unknown PR-SCTP policy {other:?}")),
     }
 }
 
 fn parse_scheduler_policy(config: &SchedulerContract) -> Result<SctpScheduler, String> {
     match config.policy.trim().to_ascii_lowercase().as_str() {
-        "fcfs" => Ok(SCTP_SCHEDULER_FCFS),
-        "priority" => Ok(SCTP_SCHEDULER_PRIORITY),
-        "rr" => Ok(SCTP_SCHEDULER_RR),
-        "fc" => Ok(SCTP_SCHEDULER_FC),
-        "wfq" => Ok(SCTP_SCHEDULER_WFQ),
+        "fcfs" => Ok(SctpScheduler(SCTP_SCHEDULER_FCFS_VALUE)),
+        "priority" => Ok(SctpScheduler(SCTP_SCHEDULER_PRIORITY_VALUE)),
+        "rr" => Ok(SctpScheduler(SCTP_SCHEDULER_RR_VALUE)),
+        "fc" => Ok(SctpScheduler(SCTP_SCHEDULER_FC_VALUE)),
+        "wfq" => Ok(SctpScheduler(SCTP_SCHEDULER_WFQ_VALUE)),
         other => Err(format!("unknown scheduler policy {other:?}")),
     }
 }
 
-fn apply_auth_contract(stream: &SctpStream, auth: &AuthContract) -> Result<(), String> {
+fn apply_auth_contract(stream: &mut FeatureStream, auth: &AuthContract) -> Result<(), String> {
     stream.set_auth_chunks(&auth.chunk_types).map_err(io_string)?;
     stream
         .set_auth_key(&SctpAuthKey {
@@ -1846,7 +1901,7 @@ fn apply_auth_contract(stream: &SctpStream, auth: &AuthContract) -> Result<(), S
 }
 
 fn apply_message_send_controls(
-    stream: &SctpStream,
+    stream: &mut FeatureStream,
     msg: &MessageSpec,
     contract: &ScenarioContract,
 ) -> Result<(), String> {
@@ -1860,7 +1915,11 @@ fn apply_message_send_controls(
             .map_err(io_string)?;
     } else {
         stream
-            .set_default_prinfo(SctpPrInfo { assoc_id: 0, value: 0, policy: SCTP_PR_NONE })
+            .set_default_prinfo(SctpPrInfo {
+                assoc_id: 0,
+                value: 0,
+                policy: SctpPrPolicy(SCTP_PR_POLICY_NONE),
+            })
             .map_err(io_string)?;
     }
     if msg.auth_key_id != 0 {
@@ -1876,7 +1935,7 @@ fn apply_message_send_controls(
 }
 
 fn send_contract_messages_with_controls(
-    stream: &SctpStream,
+    stream: &mut FeatureStream,
     messages: &[MessageSpec],
     contract: &ScenarioContract,
 ) -> Result<(), String> {
@@ -1885,7 +1944,7 @@ fn send_contract_messages_with_controls(
         let payload = materialize_payload(msg);
         let info = SctpSendInfo {
             stream: msg.stream,
-            flags: if msg.unordered { SCTP_UNORDERED } else { 0 },
+            flags: if msg.unordered { SCTP_UNORDERED_FLAG } else { 0 },
             ppid: msg.ppid,
             context: 0,
             assoc_id: 0,
@@ -1903,23 +1962,14 @@ fn send_contract_messages_with_controls(
     Ok(())
 }
 
-fn dial_contract_prefer_multi(contract: &ScenarioContract) -> Result<SctpStream, String> {
-    if contract.connect_addresses.len() <= 1 {
-        return dial_contract(contract);
-    }
-    let addrs = resolve_addrs(&contract.connect_addresses)?;
-    let multi = SctpMultiAddr::new(addrs).map_err(io_string)?;
-    SctpStream::connect_multi_with_init_options(
-        &multi,
-        SctpInitOptions { num_ostreams: 32, max_instreams: 32, ..SctpInitOptions::default() },
-    )
-    .map_err(io_string)
+fn dial_contract_prefer_multi(contract: &ScenarioContract) -> Result<FeatureStream, String> {
+    dial_contract(contract)
 }
 
-fn dial_contract_with_auth(contract: &ScenarioContract) -> Result<SctpStream, String> {
-    let stream = dial_contract(contract)?;
+fn dial_contract_with_auth(contract: &ScenarioContract) -> Result<FeatureStream, String> {
+    let mut stream = dial_contract(contract)?;
     let auth = contract.auth.as_ref().ok_or_else(|| "missing auth contract".to_owned())?;
-    apply_auth_contract(&stream, auth)?;
+    apply_auth_contract(&mut stream, auth)?;
     Ok(stream)
 }
 
@@ -1961,7 +2011,7 @@ fn distinct_non_zero_assoc_ids(ids: &[i32]) -> Vec<i32> {
 }
 
 fn wait_for_one_to_many_assoc_ids(
-    socket: &SctpSocket,
+    socket: &mut FeatureOneToManySocket,
     want: usize,
     deadline: Instant,
 ) -> Result<Vec<i32>, String> {
@@ -1993,7 +2043,7 @@ fn build_event_mask(subscriptions: &[String]) -> SctpEventMask {
 }
 
 fn read_server_messages(
-    stream: &SctpStream,
+    stream: &mut FeatureStream,
     expected: &[MessageSpec],
 ) -> Result<NotificationSummary, String> {
     let mut summary = NotificationSummary::default();
@@ -2065,7 +2115,7 @@ fn max_expected_payload_size(expected: &[MessageSpec]) -> usize {
 }
 
 fn run_trigger_and_read(
-    stream: &SctpStream,
+    stream: &mut FeatureStream,
     contract: &ScenarioContract,
 ) -> Result<NotificationSummary, String> {
     stream
@@ -2089,6 +2139,7 @@ fn parse_args() -> Result<Config, String> {
     let mut cfg = Config {
         agent_name: "rust-sctp-feature-client".to_owned(),
         environment_name: "rust-sctp".to_owned(),
+        transport_profile: RequestedTransportProfile::Auto,
         ..Config::default()
     };
 
@@ -2101,6 +2152,11 @@ fn parse_args() -> Result<Config, String> {
             }
             "--environment-name" => {
                 cfg.environment_name = args.next().ok_or("--environment-name requires a value")?
+            }
+            "--transport-profile" => {
+                cfg.transport_profile = RequestedTransportProfile::parse(
+                    &args.next().ok_or("--transport-profile requires a value")?,
+                )?
             }
             "--features" => {
                 let raw = args.next().ok_or("--features requires a value")?;
@@ -2128,6 +2184,7 @@ fn usage() -> String {
         "options:",
         "  --agent-name <name>",
         "  --environment-name <name>",
+        "  --transport-profile <auto|native|udp_encap>",
         "  --features <comma,separated,ids>",
         "  --include-manual-setup",
         "  --list-scenarios",
