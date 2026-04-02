@@ -9,4 +9,4 @@ crc = "3.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sctp-proto = { path = "vendor/sctp-proto" }
-ureq = { version = "2.2", features = ["json"] }
+ureq = { version = "2.2", default-features = false, features = ["json"] }

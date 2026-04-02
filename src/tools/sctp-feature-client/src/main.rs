@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use transport::{
     FeatureAssocStatus, FeatureNotification, FeatureOneToManySocket, FeatureStream,
-    RequestedTransportProfile,
+    RequestedTransportProfile, transport_config_for_contract,
 };
 
 const STATE_PASSED: &str = "passed";
@@ -615,17 +615,10 @@ fn handle_socket_create(
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    match contract.transport.as_str() {
-        "sctp4" => {
-            let sock = SctpListener::bind(addr).map_err(io_string)?;
-            drop(sock);
-        }
-        "sctp4_udp_encap" => {
-            let sock = UdpSocket::bind(addr).map_err(io_string)?;
-            drop(sock);
-        }
-        other => return Err(format!("unsupported contract transport {other}")),
-    }
+    let sock =
+        SctpListener::bind_with_config(addr, transport_config_for_contract(contract).map_err(io_string)?)
+            .map_err(io_string)?;
+    drop(sock);
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_create".to_owned(),
         evidence_text: format!("created a local endpoint for transport {}", contract.transport),
@@ -830,17 +823,10 @@ fn handle_autoclose(
     contract: &ScenarioContract,
 ) -> Result<Option<CompletionPayload>, String> {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    match contract.transport.as_str() {
-        "sctp4" => {
-            let socket = SctpSocket::bind(addr).map_err(io_string)?;
-            socket.set_autoclose(5).map_err(io_string)?;
-        }
-        "sctp4_udp_encap" => {
-            let socket = UdpSocket::bind(addr).map_err(io_string)?;
-            drop(socket);
-        }
-        other => return Err(format!("unsupported contract transport {other}")),
-    }
+    let socket =
+        SctpSocket::bind_with_config(addr, transport_config_for_contract(contract).map_err(io_string)?)
+            .map_err(io_string)?;
+    socket.set_autoclose(5).map_err(io_string)?;
     Ok(Some(CompletionPayload {
         evidence_kind: "socket_option".to_owned(),
         evidence_text: format!(
