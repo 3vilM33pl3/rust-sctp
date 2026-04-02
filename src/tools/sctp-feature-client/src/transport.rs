@@ -799,6 +799,7 @@ impl UdpAssociationSocket {
                     }
                 }
                 ProtoEvent::DatagramReceived | ProtoEvent::Stream(_) => {}
+                _ => {}
             }
         }
 
