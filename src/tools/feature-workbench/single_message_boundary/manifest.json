@@ -1,0 +1,52 @@
+{
+  "feature_id": "single_message_boundary",
+  "language": "rust",
+  "build": [
+    {
+      "cwd": "{lang_root}",
+      "env": {
+        "RUSTC": "{rust_stage1_rustc}",
+        "CARGO_TARGET_DIR": "{rust_target_dir}"
+      },
+      "command": [
+        "{rust_cargo}",
+        "build",
+        "--manifest-path",
+        "{helper_manifest}"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "two_messages_preserve_boundaries",
+      "title": "Two SCTP messages preserve boundaries",
+      "timeout_seconds": 20,
+      "server": {
+        "command": [
+          "{helper_binary}",
+          "server",
+          "--bind",
+          "{server_host}:{server_port}",
+          "--read-messages",
+          "2"
+        ]
+      },
+      "client": {
+        "command": [
+          "{helper_binary}",
+          "client",
+          "--connect",
+          "{server_host}:{server_port}",
+          "--message",
+          "alpha:1:100",
+          "--message",
+          "beta:1:101"
+        ]
+      },
+      "assertions": {
+        "server_recv_count": 2,
+        "server_payloads": ["alpha", "beta"]
+      }
+    }
+  ]
+}
