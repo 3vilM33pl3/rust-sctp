@@ -344,13 +344,81 @@ pub enum SctpNotification {
         /// Partial-delivery indication value from the stack.
         indication: u32,
     },
+    /// The stack failed to send a user message.
+    SendFailure {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Send-failure flags reported by the stack.
+        flags: u16,
+        /// Notification-specific error code.
+        error: u32,
+        /// Per-message send metadata associated with the failed message, if available.
+        info: Option<SctpSendInfo>,
+        /// Returned failed user payload bytes.
+        data: Vec<u8>,
+    },
+    /// The remote peer reported an SCTP operational error.
+    PeerError {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Remote SCTP error code.
+        error: u16,
+        /// Raw remote error TLV payload.
+        data: Vec<u8>,
+    },
+    /// The peer indicated an adaptation-layer value.
+    Adaptation {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Adaptation-layer indication value.
+        indication: u32,
+    },
+    /// SCTP AUTH key state changed.
+    Authentication {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Key id described by the notification.
+        key_id: u16,
+        /// Alternate key id, when supplied by the stack.
+        alt_key_id: u16,
+        /// Authentication notification indication value.
+        indication: u32,
+    },
+    /// The stack has no more data queued for the association.
+    SenderDry {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+    },
+    /// SCTP stream reset state changed.
+    StreamReset {
+        /// Association identifier for the notification.
+        assoc_id: i32,
+        /// Stream-reset flags reported by the stack.
+        flags: u16,
+        /// Streams affected by the reset notification.
+        streams: Vec<u16>,
+    },
     /// A notification the runtime does not parse yet.
     Unknown {
         /// Raw SCTP notification type.
         notification_type: u16,
         /// Association identifier if it could be derived from the payload.
         assoc_id: Option<i32>,
+        /// Raw notification payload bytes.
+        payload: Vec<u8>,
     },
+}
+
+/// Message-level state returned by SCTP `recvmsg()`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpReceiveFlags {
+    /// The receive completed an SCTP user message record.
+    pub end_of_record: bool,
+    /// The user payload was larger than the provided buffer.
+    pub truncated: bool,
+    /// Ancillary SCTP metadata was larger than the runtime control buffer.
+    pub control_truncated: bool,
 }
 
 /// Result of receiving one SCTP message or notification.
@@ -363,6 +431,18 @@ pub struct SctpReceive {
     pub info: Option<SctpRecvInfo>,
     /// Typed SCTP notification metadata when the received payload is a notification.
     pub notification: Option<SctpNotification>,
+    /// Message-level flags returned by `recvmsg()`.
+    pub flags: SctpReceiveFlags,
+}
+
+/// Result of receiving one SCTP message or notification on a one-to-many socket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub struct SctpReceiveFrom {
+    /// Received user message or notification metadata.
+    pub receive: SctpReceive,
+    /// Peer address returned by `recvmsg()`, when supplied by the stack.
+    pub peer_addr: Option<SocketAddr>,
 }
 
 /// A validated SCTP multi-address endpoint.
@@ -1314,6 +1394,16 @@ impl SctpStream {
         SctpStreamBackend::bind(local.addrs(), config, true).map(SctpStream)
     }
 
+    /// Connects this bound SCTP socket to a single remote endpoint.
+    pub fn connect_bound<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
+        self.0.connect_bound(addr)
+    }
+
+    /// Connects this bound SCTP socket to a remote multi-address endpoint.
+    pub fn connect_bound_multi(&self, remote: &SctpMultiAddr) -> io::Result<()> {
+        self.0.connect_bound_multi(remote.addrs())
+    }
+
     /// Returns the primary remote address of this association.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
@@ -1724,14 +1814,62 @@ impl SctpSocket {
         self.0.send_to_with_info(buf, addr, info)
     }
 
+    /// Receives one SCTP user message or notification with metadata and peer address.
+    pub fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceiveFrom> {
+        self.0.recv_message(buf)
+    }
+
+    /// Receives one SCTP user message with optional metadata and peer address.
+    pub fn recv_with_info(
+        &self,
+        buf: &mut [u8],
+    ) -> io::Result<(usize, Option<SctpRecvInfo>, Option<SocketAddr>)> {
+        self.0.recv_with_info(buf)
+    }
+
     /// Lists association identifiers currently present on this socket.
     pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         self.0.assoc_ids()
     }
 
+    /// Retrieves association status for the given association id.
+    pub fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
+        self.0.assoc_status(assoc_id)
+    }
+
+    /// Peels the given association off onto a dedicated SCTP stream.
+    pub fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStream> {
+        self.0.peeloff(assoc_id).map(SctpStream)
+    }
+
+    /// Sets the read timeout.
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_read_timeout(dur)
+    }
+
+    /// Sets the write timeout.
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_write_timeout(dur)
+    }
+
+    /// Returns the read timeout.
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.read_timeout()
+    }
+
+    /// Returns the write timeout.
+    pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.write_timeout()
+    }
+
     /// Moves this socket into or out of nonblocking mode.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
+    }
+
+    /// Returns the pending socket error, if any.
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        self.0.take_error()
     }
 
     /// Creates a new independently owned handle to the same SCTP socket.
