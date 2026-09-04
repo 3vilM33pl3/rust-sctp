@@ -548,7 +548,28 @@ fn is_native_sctp_unsupported(err: &io::Error) -> bool {
         || matches!(err.raw_os_error(), Some(92 | 93 | 94 | 97))
 }
 
+#[cfg(target_os = "linux")]
+fn udp_socket_operation_unsupported() -> io::Error {
+    io::const_error!(io::ErrorKind::Unsupported, "UDP one-to-many operation is not implemented")
+}
+
 impl SctpStreamBackend {
+    fn connect_bound<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.connect_bound(addr),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(io::const_error!(io::ErrorKind::Unsupported, "UDP stream is already connected")),
+        }
+    }
+
+    fn connect_bound_multi(&self, addrs: &[SocketAddr]) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.connect_bound_multi(addrs),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(io::const_error!(io::ErrorKind::Unsupported, "UDP multihoming is not supported")),
+        }
+    }
+
     fn connect(
         addrs: &[SocketAddr],
         opts: SctpInitOptions,
@@ -1183,6 +1204,78 @@ impl SctpListenerBackend {
 }
 
 impl SctpSocketBackend {
+    fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceiveFrom> {
+        match self {
+            Self::Native(inner) => inner.recv_message(buf),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn recv_with_info(&self, buf: &mut [u8]) -> io::Result<(usize, Option<SctpRecvInfo>, Option<SocketAddr>)> {
+        match self {
+            Self::Native(inner) => inner.recv_with_info(buf),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
+        match self {
+            Self::Native(inner) => inner.assoc_status(assoc_id),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStreamBackend> {
+        match self {
+            Self::Native(inner) => inner.peeloff(assoc_id).map(SctpStreamBackend::Native),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_read_timeout(dur),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Native(inner) => inner.set_write_timeout(dur),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Native(inner) => inner.read_timeout(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Native(inner) => inner.write_timeout(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
+    fn take_error(&self) -> io::Result<Option<io::Error>> {
+        match self {
+            Self::Native(inner) => inner.take_error(),
+            #[cfg(target_os = "linux")]
+            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+        }
+    }
+
     fn bind(local: &[SocketAddr], config: SctpTransportConfig, multi: bool) -> io::Result<Self> {
         match config.policy {
             SctpTransportPolicy::NativeOnly => {

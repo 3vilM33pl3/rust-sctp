@@ -441,7 +441,7 @@ impl UdpAssociationSocket {
 
     fn recv_message(&mut self, buf: &mut [u8]) -> io::Result<SctpReceive> {
         if let Some(notification) = self.pending_notifications.pop_front() {
-            return Ok(SctpReceive { len: 0, info: None, notification: Some(notification) });
+            return Ok(SctpReceive { len: 0, info: None, notification: Some(notification), flags: Default::default() });
         }
         if let Some(message) = self.pending_messages.pop_front() {
             return self.materialize_recv_message(buf, message);
@@ -456,7 +456,7 @@ impl UdpAssociationSocket {
         })?;
 
         if let Some(notification) = self.pending_notifications.pop_front() {
-            return Ok(SctpReceive { len: 0, info: None, notification: Some(notification) });
+            return Ok(SctpReceive { len: 0, info: None, notification: Some(notification), flags: Default::default() });
         }
         if let Some(message) = self.pending_messages.pop_front() {
             return self.materialize_recv_message(buf, message);
@@ -493,6 +493,7 @@ impl UdpAssociationSocket {
         };
         Ok(SctpReceive {
             len: message.data.len(),
+            flags: crate::net::SctpReceiveFlags { end_of_record: true, ..Default::default() },
             notification: None,
             info: Some(SctpRecvInfo {
                 stream: message.stream,
