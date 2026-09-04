@@ -46,6 +46,11 @@ pub struct Chunks {
 }
 
 impl Chunks {
+    /// Stream sequence number, first TSN, and unordered bit of this record.
+    pub fn receive_metadata(&self) -> (u16, u32, bool) {
+        (self.ssn, self.chunks.first().map_or(0, |c| c.tsn), self.chunks.first().is_some_and(|c| c.unordered))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

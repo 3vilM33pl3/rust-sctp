@@ -47,9 +47,13 @@ impl Param for ParamStateCookie {
 
 impl ParamStateCookie {
     pub(crate) fn new() -> Self {
+        Self::new_with_random(crate::util::fill_random_bytes)
+    }
+
+    pub(crate) fn new_with_random(random: fn(&mut [u8])) -> Self {
         let mut cookie = BytesMut::new();
         cookie.resize(32, 0);
-        crate::util::fill_random_bytes(cookie.as_mut());
+        random(cookie.as_mut());
 
         ParamStateCookie {
             cookie: cookie.freeze(),

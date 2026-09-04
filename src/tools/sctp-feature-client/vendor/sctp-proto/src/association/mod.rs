@@ -32,7 +32,7 @@ use crate::param::param_state_cookie::ParamStateCookie;
 use crate::param::param_supported_extensions::ParamSupportedExtensions;
 use crate::queue::{payload_queue::PayloadQueue, pending_queue::PendingQueue};
 use crate::shared::{AssociationEventInner, AssociationId, EndpointEvent, EndpointEventInner};
-use crate::util::{random_nonzero_u32, sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
+use crate::util::{sna16lt, sna32gt, sna32gte, sna32lt, sna32lte};
 use crate::{AssociationEvent, Payload, Side, Transmit};
 use stream::{ReliabilityType, Stream, StreamEvent, StreamId, StreamState};
 use timer::{ACK_INTERVAL, RtoManager, Timer, TimerTable};
@@ -157,6 +157,7 @@ pub enum Event {
 // association is Closed its TCB SHOULD be removed.
 #[derive(Debug)]
 pub struct Association {
+    random_source: fn(&mut [u8]),
     side: Side,
     state: AssociationState,
     handshake_completed: bool,
@@ -246,6 +247,7 @@ pub struct Association {
 impl Default for Association {
     fn default() -> Self {
         Association {
+            random_source: crate::util::fill_random_bytes,
             side: Side::default(),
             state: AssociationState::default(),
             handshake_completed: false,
@@ -355,6 +357,7 @@ impl Association {
 
         Association {
             side,
+            random_source: config.random_source,
             handshake_completed: false,
             max_receive_buffer_size: config.max_receive_buffer_size(),
             max_send_message_size: config.max_send_message_size(),
@@ -372,7 +375,7 @@ impl Association {
                 config.max_init_retransmits(),
                 config.max_data_retransmits(),
                 config.rto_max_ms(),
-            ),
+            ).with_init_timeout(config.max_init_timeout_ms),
 
             mtu,
             cwnd,
@@ -408,7 +411,9 @@ impl Association {
             Side::Client
         };
 
-        let tsn = random_nonzero_u32().get();
+        let mut bytes = [0; 4];
+        (config.random_source)(&mut bytes);
+        let tsn = u32::from_ne_bytes(bytes).max(1);
 
         let mut this = Self::new_common(
             config,
@@ -681,6 +686,23 @@ impl Association {
         self.stats
     }
 
+    /// Snapshot used by a socket adapter; counters saturate at socket API widths.
+    pub fn socket_status(&self) -> (u32, u16, u16, u16, u16, u32, u32, u32, u32, u32) {
+        (self.rwnd, self.inflight_queue.len().min(u16::MAX as usize) as u16,
+         self.pending_queue.len().min(u16::MAX as usize) as u16,
+         self.my_max_num_inbound_streams, self.my_max_num_outbound_streams,
+         self.max_payload_size, self.cwnd, self.rto_mgr.srtt.min(u32::MAX as u64) as u32,
+         self.rto_mgr.get_rto().min(u32::MAX as u64) as u32, self.mtu)
+    }
+
+    /// Apply validated socket RTO values. Zero retains the existing value.
+    pub fn configure_rto(&mut self, initial: u64, min: u64, max: u64) {
+        if min != 0 { self.rto_mgr.rto_min = min; }
+        if max != 0 { self.rto_mgr.rto_max = max; self.timers.set_rto_max(max); }
+        let rto = if initial != 0 { initial } else { self.rto_mgr.get_rto() };
+        self.rto_mgr.set_rto(rto.clamp(self.rto_mgr.rto_min, self.rto_mgr.rto_max), false);
+    }
+
     /// Whether the Association is in the process of being established
     ///
     /// If this returns `false`, the Association may be either established or closed, signaled by the
@@ -755,7 +777,7 @@ impl Association {
         // Attempt a graceful shutdown.
         self.set_state(AssociationState::ShutdownPending);
 
-        if self.inflight_queue_length == 0 {
+        if self.inflight_queue_length == 0 && self.pending_queue.is_empty() {
             // No more outstanding, send shutdown.
             self.will_send_shutdown = true;
             self.awake_write_loop();
@@ -1193,7 +1215,7 @@ impl Association {
         };
 
         if self.my_cookie.is_none() {
-            self.my_cookie = Some(ParamStateCookie::new());
+            self.my_cookie = Some(ParamStateCookie::new_with_random(self.random_source));
         }
 
         if let Some(my_cookie) = &self.my_cookie {
@@ -1703,7 +1725,7 @@ impl Association {
         let state = self.state();
 
         if state == AssociationState::Established {
-            if !self.inflight_queue.is_empty() {
+            if !self.inflight_queue.is_empty() || !self.pending_queue.is_empty() {
                 self.set_state(AssociationState::ShutdownReceived);
             } else {
                 // No more outstanding, send shutdown ack.
@@ -2133,12 +2155,12 @@ impl Association {
             trace!("[{}] T3-rtx timer start (pt3)", self.side);
             self.timers
                 .restart_if_stale(Timer::T3RTX, now, self.rto_mgr.get_rto());
-        } else if state == AssociationState::ShutdownPending {
+        } else if state == AssociationState::ShutdownPending && self.pending_queue.is_empty() {
             // No more outstanding, send shutdown.
             should_awake_write_loop = true;
             self.will_send_shutdown = true;
             self.set_state(AssociationState::ShutdownSent);
-        } else if state == AssociationState::ShutdownReceived {
+        } else if state == AssociationState::ShutdownReceived && self.pending_queue.is_empty() {
             // No more outstanding, send shutdown ack.
             should_awake_write_loop = true;
             self.will_send_shutdown_ack = true;
@@ -2318,6 +2340,9 @@ impl Association {
             | AssociationState::ShutdownSent
             | AssociationState::ShutdownReceived => {
                 raw_packets = self.gather_data_packets_to_retransmit(raw_packets, now);
+                // Graceful shutdown must drain data queued before shutdown(),
+                // including records not yet assigned to the inflight queue.
+                raw_packets = self.gather_outbound_data_and_reconfig_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
                 self.gather_outbound_shutdown_packets(raw_packets, now)

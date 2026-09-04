@@ -36,6 +36,7 @@ pub(crate) struct TimerTable {
     max_retrans: [Option<usize>; TIMER_COUNT],
     /// Maximum RTO value for exponential backoff.
     rto_max: u64,
+    init_timeout: Option<u64>,
 }
 
 impl Default for TimerTable {
@@ -45,11 +46,17 @@ impl Default for TimerTable {
             retrans: [0; TIMER_COUNT],
             max_retrans: [None; TIMER_COUNT],
             rto_max: 60000, // Default RTO_MAX
+            init_timeout: None,
         }
     }
 }
 
 impl TimerTable {
+    pub(crate) fn with_init_timeout(mut self, timeout: Option<u64>) -> Self {
+        self.init_timeout = timeout;
+        self
+    }
+    pub(crate) fn set_rto_max(&mut self, max: u64) { self.rto_max = max; }
     pub fn new(
         max_init_retransmits: Option<usize>,
         max_data_retransmits: Option<usize>,
@@ -85,7 +92,10 @@ impl TimerTable {
         let interval = if timer == Timer::Ack {
             interval
         } else {
-            calculate_next_timeout(interval, self.retrans[timer as usize], self.rto_max)
+            let max = if matches!(timer, Timer::T1Init | Timer::T1Cookie) {
+                self.init_timeout.unwrap_or(self.rto_max)
+            } else { self.rto_max };
+            calculate_next_timeout(interval, self.retrans[timer as usize], max)
         };
 
         let time = now + Duration::from_millis(interval);

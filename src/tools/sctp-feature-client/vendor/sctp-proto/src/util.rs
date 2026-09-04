@@ -578,3 +578,13 @@ mod test {
         Ok(())
     }
 }
+
+pub(crate) struct CallbackAssociationIdGenerator(pub fn(&mut [u8]));
+impl AssociationIdGenerator for CallbackAssociationIdGenerator {
+    fn generate_aid(&mut self) -> AssociationId {
+        let mut bytes = [0; 4];
+        (self.0)(&mut bytes);
+        u32::from_ne_bytes(bytes)
+    }
+    fn aid_lifetime(&self) -> Option<Duration> { None }
+}
