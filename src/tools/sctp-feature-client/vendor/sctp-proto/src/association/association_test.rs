@@ -13,6 +13,8 @@ fn create_association(config: TransportConfig) -> Association {
         0,
         SocketAddr::from_str("0.0.0.0:0").unwrap(),
         None,
+        5000,
+        5000,
         Instant::now(),
     )
 }
@@ -726,6 +728,8 @@ fn test_out_of_band_association_creation() {
         max_payload_size,
         remote_addr,
         None,
+        5000,
+        5000,
         local_init.clone(),
         remote_init.clone(),
     )
@@ -802,6 +806,8 @@ fn test_out_of_band_association_stream_negotiation() {
         1200,
         remote_addr,
         None,
+        5000,
+        5000,
         local_init,
         remote_init,
     )
@@ -840,6 +846,8 @@ fn test_out_of_band_connected_event() {
         1200,
         remote_addr,
         None,
+        5000,
+        5000,
         local_init,
         remote_init,
     )
@@ -875,6 +883,8 @@ fn test_out_of_band_symmetric_setup() {
         1200,
         addr_b,
         None,
+        5000,
+        5000,
         init_a.clone(),
         init_b.clone(),
     )
@@ -886,6 +896,8 @@ fn test_out_of_band_symmetric_setup() {
         1200,
         addr_a,
         None,
+        5000,
+        5000,
         init_b.clone(),
         init_a.clone(),
     )
@@ -937,6 +949,8 @@ fn test_out_of_band_with_forward_tsn_support() {
         1200,
         remote_addr,
         None,
+        5000,
+        5000,
         local_init,
         remote_init,
     )
@@ -970,6 +984,8 @@ fn test_out_of_band_initial_tsn_zero_wrap() {
         1200,
         remote_addr,
         None,
+        5000,
+        5000,
         local_init,
         remote_init,
     )
@@ -1002,6 +1018,8 @@ fn test_out_of_band_rwnd_negotiation() {
         1200,
         remote_addr,
         None,
+        5000,
+        5000,
         local_init,
         remote_init,
     )

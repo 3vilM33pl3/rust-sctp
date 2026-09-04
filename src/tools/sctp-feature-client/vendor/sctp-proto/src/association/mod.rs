@@ -590,7 +590,12 @@ impl Association {
     /// - a call was made to `handle_timeout`
     #[must_use]
     pub fn poll_transmit(&mut self, now: Instant) -> Option<Transmit> {
-        let (contents, _) = self.gather_outbound(now);
+        let (contents, keep_open) = self.gather_outbound(now);
+        if !keep_open {
+            // SHUTDOWN-COMPLETE is the last datagram. Previously the sender
+            // stayed in ShutdownSent forever after putting it on the wire.
+            let _ = self.close();
+        }
         if contents.is_empty() {
             None
         } else {
@@ -831,6 +836,13 @@ impl Association {
         }
 
         Ok(())
+    }
+
+    /// Release endpoint routing after a terminal failure or completed shutdown.
+    pub fn drain_endpoint(&mut self) {
+        if self.endpoint_events.is_empty() {
+            self.endpoint_events.push_back(EndpointEventInner::Drained);
+        }
     }
 
     /// open_stream opens a stream

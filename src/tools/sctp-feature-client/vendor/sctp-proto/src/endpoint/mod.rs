@@ -122,6 +122,7 @@ impl Endpoint {
     ) -> Option<AssociationEvent> {
         match event.0 {
             EndpointEventInner::Drained => {
+                if !self.associations.contains(ch.0) { return None; }
                 let conn = self.associations.remove(ch.0);
                 self.association_ids_init.remove(&conn.init_cid);
                 for cid in conn.loc_cids.values() {
