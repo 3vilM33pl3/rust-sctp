@@ -37,7 +37,7 @@ libc = { version = "0.2.178", default-features = false, features = [
     'rustc-dep-of-std',
 ], public = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 bytes = { version = "1.5.0", default-features = false }
 sctp-proto = { path = "../../src/tools/sctp-feature-client/vendor/sctp-proto", default-features = false, features = ["rustc-dep-of-std"] }
 

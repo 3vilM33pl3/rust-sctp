@@ -2001,6 +2001,10 @@ pub struct SctpSocket {
 
 #[cfg(target_os = "linux")]
 impl SctpSocket {
+    pub fn begin_association(&self, peer: SocketAddr) -> io::Result<()> {
+        self.inner.connect(&peer)
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpSocket> {
         init();
         each_addr(addr, |addr| {
@@ -2239,6 +2243,7 @@ pub struct SctpStream;
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 impl SctpStream {
+    #[allow(dead_code)]
     pub fn connect<A: ToSocketAddrs>(_addr: A) -> io::Result<SctpStream> {
         sctp_unsupported()
     }
@@ -2250,6 +2255,7 @@ impl SctpStream {
         sctp_unsupported()
     }
 
+    #[allow(dead_code)]
     pub fn connect_multi(_addrs: &[SocketAddr]) -> io::Result<SctpStream> {
         sctp_unsupported()
     }
@@ -2568,6 +2574,8 @@ pub struct SctpSocket;
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 impl SctpSocket {
+    pub fn begin_association(&self, _peer: SocketAddr) -> io::Result<()> { sctp_unsupported() }
+
     pub fn bind<A: ToSocketAddrs>(_addr: A) -> io::Result<SctpSocket> {
         sctp_unsupported()
     }
@@ -2966,6 +2974,16 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+    pub fn bind_sctp_encapsulation(addr: SocketAddr, reuse_port: bool) -> io::Result<UdpSocket> {
+        init();
+        let sock = Socket::new(addr_family(&addr), c::SOCK_DGRAM)?;
+        if reuse_port { unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEPORT, 1 as c_int) }?; }
+        let (raw, len) = socket_addr_to_c(&addr);
+        cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
+        Ok(UdpSocket { inner: sock })
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
         init();
         return each_addr(addr, inner);

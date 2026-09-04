@@ -764,6 +764,7 @@ pub struct SctpStream {
 }
 
 impl SctpStream {
+    #[allow(dead_code)]
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<SctpStream> {
         init();
         each_addr(addr, |addr| {
@@ -810,6 +811,7 @@ impl SctpStream {
         })
     }
 
+    #[allow(dead_code)]
     pub fn connect_multi(addrs: &[SocketAddr]) -> io::Result<SctpStream> {
         init();
         if addrs.is_empty() {
@@ -1642,6 +1644,8 @@ pub struct SctpSocket {
 }
 
 impl SctpSocket {
+    pub fn begin_association(&self, peer: SocketAddr) -> io::Result<()> { self.inner.connect(&peer) }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpSocket> {
         init();
         each_addr(addr, |addr| {

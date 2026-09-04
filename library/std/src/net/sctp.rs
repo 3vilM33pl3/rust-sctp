@@ -1,5 +1,23 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+mod auto;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+mod many;
 #[cfg(all(
     test,
     not(any(
@@ -10,8 +28,15 @@
     ))
 ))]
 mod tests;
-#[cfg(target_os = "linux")]
-mod udp_linux;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+mod udp;
 
 use crate::fmt;
 use crate::io::prelude::*;
@@ -40,9 +65,10 @@ pub struct SctpInitOptions {
 #[unstable(feature = "sctp", issue = "none")]
 pub enum SctpTransportPolicy {
     /// Use the operating system SCTP stack only.
-    #[default]
     NativeOnly,
-    /// Prefer native SCTP and fall back to UDP encapsulation if the host does not support SCTP.
+    /// Prefer native SCTP, then try UDP after an unsupported-protocol or connection failure.
+    /// Listeners and one-to-many sockets accept both transports on the same port.
+    #[default]
     NativePreferred,
     /// Use SCTP encapsulated in UDP.
     UdpOnly,
@@ -67,13 +93,14 @@ pub struct SctpTransportConfig {
     /// Transport selection policy.
     pub policy: SctpTransportPolicy,
     /// UDP encapsulation settings used by `UdpOnly` and `NativePreferred`.
+    /// `None` uses `SctpUdpConfig::default()`; it does not disable fallback.
     pub udp: Option<SctpUdpConfig>,
 }
 
 #[unstable(feature = "sctp", issue = "none")]
 impl Default for SctpTransportConfig {
     fn default() -> Self {
-        Self { policy: SctpTransportPolicy::NativeOnly, udp: None }
+        Self { policy: SctpTransportPolicy::NativePreferred, udp: None }
     }
 }
 
@@ -189,7 +216,7 @@ pub struct SctpAssocStatus {
 
 /// SCTP send flag requesting unordered delivery.
 #[unstable(feature = "sctp", issue = "none")]
-pub const SCTP_UNORDERED: u16 = 1 << 0;
+pub const SCTP_UNORDERED: u16 = if cfg!(target_os = "freebsd") { 0x0400 } else { 1 };
 
 /// Disable partial reliability.
 #[unstable(feature = "sctp", issue = "none")]
@@ -197,15 +224,18 @@ pub const SCTP_PR_NONE: SctpPrPolicy = SctpPrPolicy(0x0000);
 
 /// Time-based partial reliability.
 #[unstable(feature = "sctp", issue = "none")]
-pub const SCTP_PR_TTL: SctpPrPolicy = SctpPrPolicy(0x0010);
+pub const SCTP_PR_TTL: SctpPrPolicy =
+    SctpPrPolicy(if cfg!(target_os = "freebsd") { 1 } else { 0x0010 });
 
 /// Retransmission-limited partial reliability.
 #[unstable(feature = "sctp", issue = "none")]
-pub const SCTP_PR_RTX: SctpPrPolicy = SctpPrPolicy(0x0020);
+pub const SCTP_PR_RTX: SctpPrPolicy =
+    SctpPrPolicy(if cfg!(target_os = "freebsd") { 3 } else { 0x0020 });
 
 /// Priority-based partial reliability.
 #[unstable(feature = "sctp", issue = "none")]
-pub const SCTP_PR_PRIORITY: SctpPrPolicy = SctpPrPolicy(0x0030);
+pub const SCTP_PR_PRIORITY: SctpPrPolicy =
+    SctpPrPolicy(if cfg!(target_os = "freebsd") { 2 } else { 0x0030 });
 
 /// First-come, first-served stream scheduling.
 #[unstable(feature = "sctp", issue = "none")]
@@ -501,20 +531,68 @@ pub struct SctpSocket(SctpSocketBackend);
 
 enum SctpStreamBackend {
     Native(net_imp::SctpStream),
-    #[cfg(target_os = "linux")]
-    Udp(udp_linux::UdpSctpStream),
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Udp(udp::UdpSctpStream),
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Pending(auto::Bound),
 }
 
 enum SctpListenerBackend {
     Native(net_imp::SctpListener),
-    #[cfg(target_os = "linux")]
-    Udp(udp_linux::UdpSctpListener),
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Udp(udp::UdpSctpListener),
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Hybrid(auto::Listener),
 }
 
 enum SctpSocketBackend {
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Hybrid(many::Many),
     Native(net_imp::SctpSocket),
-    #[cfg(target_os = "linux")]
-    Udp(udp_linux::UdpSctpSocket),
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Udp(udp::UdpSctpSocket),
 }
 
 /// Iterator over incoming SCTP streams.
@@ -535,38 +613,89 @@ fn resolve_socket_addrs<A: ToSocketAddrs>(addr: A) -> io::Result<Vec<SocketAddr>
 }
 
 fn udp_config(config: SctpTransportConfig) -> io::Result<SctpUdpConfig> {
-    config.udp.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "UDP transport policy requires udp encapsulation settings",
-        )
-    })
+    Ok(config.udp.unwrap_or_default())
 }
 
 fn is_native_sctp_unsupported(err: &io::Error) -> bool {
-    err.kind() == io::ErrorKind::Unsupported
-        || matches!(err.raw_os_error(), Some(92 | 93 | 94 | 97))
+    if err.kind() == io::ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(unix)]
+    if matches!(
+        err.raw_os_error(),
+        Some(
+            libc::EPROTONOSUPPORT | libc::EAFNOSUPPORT | libc::ESOCKTNOSUPPORT | libc::ENOPROTOOPT
+        )
+    ) {
+        return true;
+    }
+    false
 }
 
-#[cfg(target_os = "linux")]
-fn udp_socket_operation_unsupported() -> io::Error {
-    io::const_error!(io::ErrorKind::Unsupported, "UDP one-to-many operation is not implemented")
+fn should_fallback(err: &io::Error) -> bool {
+    is_native_sctp_unsupported(err)
+        || matches!(
+            err.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::NetworkUnreachable
+                | io::ErrorKind::TimedOut
+        )
 }
 
 impl SctpStreamBackend {
     fn connect_bound<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.connect(&resolve_socket_addrs(addr)?, false),
             Self::Native(inner) => inner.connect_bound(addr),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(io::const_error!(io::ErrorKind::Unsupported, "UDP stream is already connected")),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(_) => {
+                Err(io::const_error!(io::ErrorKind::Unsupported, "UDP stream is already connected"))
+            }
         }
     }
 
     fn connect_bound_multi(&self, addrs: &[SocketAddr]) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.connect(addrs, true),
             Self::Native(inner) => inner.connect_bound_multi(addrs),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(io::const_error!(io::ErrorKind::Unsupported, "UDP multihoming is not supported")),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(_) => Err(io::const_error!(
+                io::ErrorKind::Unsupported,
+                "UDP multihoming is not supported"
+            )),
         }
     }
 
@@ -579,7 +708,8 @@ impl SctpStreamBackend {
         match config.policy {
             SctpTransportPolicy::NativeOnly => {
                 if multi {
-                    net_imp::SctpStream::connect_multi_with_init_options(addrs, opts).map(Self::Native)
+                    net_imp::SctpStream::connect_multi_with_init_options(addrs, opts)
+                        .map(Self::Native)
                 } else {
                     net_imp::SctpStream::connect_with_init_options(addrs, opts).map(Self::Native)
                 }
@@ -592,13 +722,32 @@ impl SctpStreamBackend {
                 };
                 match native {
                     Ok(stream) => Ok(Self::Native(stream)),
-                    Err(err) if is_native_sctp_unsupported(&err) => {
-                        #[cfg(target_os = "linux")]
+                    Err(err) if should_fallback(&err) => {
+                        #[cfg(any(
+                            target_os = "linux",
+                            target_os = "macos",
+                            target_os = "freebsd",
+                            target_os = "openbsd",
+                            target_os = "netbsd",
+                            target_os = "dragonfly"
+                        ))]
                         {
-                            udp_linux::UdpSctpStream::connect(addrs, opts, &udp_config(config)?)
-                                .map(Self::Udp)
+                            {
+                                if multi && addrs.len() > 1 {
+                                    return Err(udp::unsupported());
+                                }
+                                udp::UdpSctpStream::connect(addrs, opts, &udp_config(config)?)
+                            }
+                            .map(Self::Udp)
                         }
-                        #[cfg(not(target_os = "linux"))]
+                        #[cfg(not(any(
+                            target_os = "linux",
+                            target_os = "macos",
+                            target_os = "freebsd",
+                            target_os = "openbsd",
+                            target_os = "netbsd",
+                            target_os = "dragonfly"
+                        )))]
                         {
                             let _ = addrs;
                             let _ = opts;
@@ -610,12 +759,31 @@ impl SctpStreamBackend {
                 }
             }
             SctpTransportPolicy::UdpOnly => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
                 {
-                    udp_linux::UdpSctpStream::connect(addrs, opts, &udp_config(config)?)
-                        .map(Self::Udp)
+                    {
+                        if multi && addrs.len() > 1 {
+                            return Err(udp::unsupported());
+                        }
+                        udp::UdpSctpStream::connect(addrs, opts, &udp_config(config)?)
+                    }
+                    .map(Self::Udp)
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
                 {
                     let _ = addrs;
                     let _ = opts;
@@ -635,424 +803,1231 @@ impl SctpStreamBackend {
                     net_imp::SctpStream::bind(local[0]).map(Self::Native)
                 }
             }
-            SctpTransportPolicy::NativePreferred => {
-                let native = if multi {
-                    net_imp::SctpStream::bind_multi(local)
-                } else {
-                    net_imp::SctpStream::bind(local[0])
-                };
-                match native {
-                    Ok(stream) => Ok(Self::Native(stream)),
-                    Err(err) if is_native_sctp_unsupported(&err) => Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "UDP-encapsulated SCTP stream bind is not supported",
-                    )),
-                    Err(err) => Err(err),
+            SctpTransportPolicy::NativePreferred | SctpTransportPolicy::UdpOnly => {
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
+                {
+                    auto::Bound::bind(local, config, multi).map(Self::Pending)
+                }
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
+                {
+                    Err(udp_only_unsupported())
                 }
             }
-            SctpTransportPolicy::UdpOnly => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "UDP-encapsulated SCTP stream bind is not supported",
-            )),
         }
     }
 
     fn peer_addr(&self) -> io::Result<SocketAddr> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.peer_addr()),
             Self::Native(inner) => inner.peer_addr(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.peer_addr(),
         }
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.local_addr(),
             Self::Native(inner) => inner.socket_addr(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.local_addr(),
         }
     }
 
     fn peer_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.peer_addrs()),
             Self::Native(inner) => inner.peer_addrs(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.peer_addrs(),
         }
     }
 
     fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.local_addrs(),
             Self::Native(inner) => inner.local_addrs(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.local_addrs(),
         }
     }
 
     fn set_nodelay(&self, on: bool) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_nodelay(on)),
             Self::Native(inner) => inner.set_nodelay(on),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_nodelay(on),
         }
     }
 
     fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_init_options(opts),
             Self::Native(inner) => inner.set_init_options(opts),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_init_options(opts),
         }
     }
 
     fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.subscribe_events(mask),
             Self::Native(inner) => inner.subscribe_events(mask),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.subscribe_events(mask),
         }
     }
 
     fn send_with_info(&self, buf: &[u8], info: Option<&SctpSendInfo>) -> io::Result<usize> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.send_with_info(buf, info),
             Self::Native(inner) => inner.send_with_info(buf, info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.send_with_info(buf, info),
         }
     }
 
     fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_rto_info(info),
             Self::Native(inner) => inner.set_rto_info(info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_rto_info(info),
         }
     }
 
     fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_delayed_sack(info),
             Self::Native(inner) => inner.set_delayed_sack(info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_delayed_sack(info),
         }
     }
 
     fn set_default_send_info(&self, info: SctpSendInfo) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_default_send_info(info),
             Self::Native(inner) => inner.set_default_send_info(info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_default_send_info(info),
         }
     }
 
     fn set_default_prinfo(&self, info: SctpPrInfo) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_default_prinfo(info),
             Self::Native(inner) => inner.set_default_prinfo(info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_default_prinfo(info),
         }
     }
 
     fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_recv_nxtinfo(on)),
             Self::Native(inner) => inner.set_recv_nxtinfo(on),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_recv_nxtinfo(on),
         }
     }
 
     fn set_fragment_interleave(&self, level: u32) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_fragment_interleave(level)),
             Self::Native(inner) => inner.set_fragment_interleave(level),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_fragment_interleave(level),
         }
     }
 
     fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_autoclose(seconds)),
             Self::Native(inner) => inner.set_autoclose(seconds),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_autoclose(seconds),
         }
     }
 
     fn set_max_burst(&self, value: u32) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_max_burst(value)),
             Self::Native(inner) => inner.set_max_burst(value),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_max_burst(value),
         }
     }
 
     fn set_maxseg(&self, value: u32) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_maxseg(value)),
             Self::Native(inner) => inner.set_maxseg(value),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_maxseg(value),
         }
     }
 
     fn bindx_add(&self, addrs: &[SocketAddr]) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.bindx_add(addrs)),
             Self::Native(inner) => inner.bindx_add(addrs),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.bindx_add(addrs),
         }
     }
 
     fn bindx_remove(&self, addrs: &[SocketAddr]) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.bindx_remove(addrs)),
             Self::Native(inner) => inner.bindx_remove(addrs),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.bindx_remove(addrs),
         }
     }
 
     fn set_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_primary_addr(addr)),
             Self::Native(inner) => inner.set_primary_addr(addr),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_primary_addr(addr),
         }
     }
 
     fn set_peer_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_peer_primary_addr(addr)),
             Self::Native(inner) => inner.set_peer_primary_addr(addr),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_peer_primary_addr(addr),
         }
     }
 
     fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.assoc_ids(),
             Self::Native(inner) => inner.assoc_ids(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.assoc_ids(),
         }
     }
 
     fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.assoc_status(assoc_id),
             Self::Native(inner) => inner.assoc_status(assoc_id),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.assoc_status(assoc_id),
         }
     }
 
     fn peeloff(&self, assoc_id: i32) -> io::Result<Self> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.peeloff(assoc_id)),
             Self::Native(inner) => inner.peeloff(assoc_id).map(Self::Native),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.peeloff(assoc_id).map(Self::Udp),
         }
     }
 
     fn enable_stream_reset(&self, flags: u16) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.enable_stream_reset(flags)),
             Self::Native(inner) => inner.enable_stream_reset(flags),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.enable_stream_reset(flags),
         }
     }
 
     fn reset_streams(&self, flags: u16, streams: &[u16]) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.reset_streams(flags, streams)),
             Self::Native(inner) => inner.reset_streams(flags, streams),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.reset_streams(flags, streams),
         }
     }
 
     fn add_streams(&self, inbound: u16, outbound: u16) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.add_streams(inbound, outbound)),
             Self::Native(inner) => inner.add_streams(inbound, outbound),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.add_streams(inbound, outbound),
         }
     }
 
     fn set_auth_chunks(&self, chunks: &[u8]) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_auth_chunks(chunks)),
             Self::Native(inner) => inner.set_auth_chunks(chunks),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_auth_chunks(chunks),
         }
     }
 
     fn set_auth_key(&self, key: &SctpAuthKey) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_auth_key(key),
             Self::Native(inner) => inner.set_auth_key(key),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_auth_key(key),
         }
     }
 
     fn activate_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.activate_auth_key(assoc_id, key_id),
             Self::Native(inner) => inner.activate_auth_key(assoc_id, key_id),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.activate_auth_key(assoc_id, key_id),
         }
     }
 
     fn delete_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.delete_auth_key(assoc_id, key_id),
             Self::Native(inner) => inner.delete_auth_key(assoc_id, key_id),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.delete_auth_key(assoc_id, key_id),
         }
     }
 
     fn set_stream_scheduler(&self, scheduler: SctpScheduler) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.set_stream_scheduler(scheduler)),
             Self::Native(inner) => inner.set_stream_scheduler(scheduler),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_stream_scheduler(scheduler),
         }
     }
 
     fn set_stream_scheduler_value(&self, stream: u16, value: u16) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => {
+                inner.call(|selected| selected.set_stream_scheduler_value(stream, value))
+            }
             Self::Native(inner) => inner.set_stream_scheduler_value(stream, value),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_stream_scheduler_value(stream, value),
         }
     }
 
     fn recv_with_info(&self, buf: &mut [u8]) -> io::Result<(usize, Option<SctpRecvInfo>)> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.recv_with_info(buf),
             Self::Native(inner) => inner.recv_with_info(buf),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.recv_with_info(buf),
         }
     }
 
     fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceive> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.recv_message(buf),
             Self::Native(inner) => inner.recv_message(buf),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.recv_message(buf),
         }
     }
 
     fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_read_timeout(dur),
             Self::Native(inner) => inner.set_read_timeout(dur),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_read_timeout(dur),
         }
     }
 
     fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_write_timeout(dur),
             Self::Native(inner) => inner.set_write_timeout(dur),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_write_timeout(dur),
         }
     }
 
     fn read_timeout(&self) -> io::Result<Option<Duration>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.read_timeout(),
             Self::Native(inner) => inner.read_timeout(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.read_timeout(),
         }
     }
 
     fn write_timeout(&self) -> io::Result<Option<Duration>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.write_timeout(),
             Self::Native(inner) => inner.write_timeout(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.write_timeout(),
         }
     }
 
     fn shutdown(&self, how: super::Shutdown) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.shutdown(how),
             Self::Native(inner) => inner.shutdown(how),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.shutdown(how),
         }
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.set_nonblocking(nonblocking),
             Self::Native(inner) => inner.set_nonblocking(nonblocking),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_nonblocking(nonblocking),
         }
     }
 
     fn take_error(&self) -> io::Result<Option<io::Error>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.take_error(),
             Self::Native(inner) => inner.take_error(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.take_error(),
         }
     }
 
     fn duplicate(&self) -> io::Result<Self> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => Ok(Self::Pending(inner.clone())),
             Self::Native(inner) => inner.duplicate().map(Self::Native),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.try_clone().map(Self::Udp),
         }
     }
 
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.read(buf),
             Self::Native(inner) => inner.read(buf),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.read(buf),
         }
     }
 
     fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.read_buf(cursor),
             Self::Native(inner) => inner.read_buf(cursor),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.read_buf(cursor),
         }
     }
 
     fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.read_vectored(bufs),
             Self::Native(inner) => inner.read_vectored(bufs),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.read_vectored(bufs),
         }
     }
 
     fn is_read_vectored(&self) -> bool {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(_) => false,
             Self::Native(inner) => inner.is_read_vectored(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(_) => true,
         }
     }
 
     fn write(&self, buf: &[u8]) -> io::Result<usize> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.write(buf)),
             Self::Native(inner) => inner.write(buf),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.write(buf),
         }
     }
 
     fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(inner) => inner.call(|selected| selected.write_vectored(bufs)),
             Self::Native(inner) => inner.write_vectored(bufs),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.write_vectored(bufs),
         }
     }
 
     fn is_write_vectored(&self) -> bool {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Pending(_) => false,
             Self::Native(inner) => inner.is_write_vectored(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(_) => true,
         }
     }
@@ -1069,34 +2044,49 @@ impl SctpListenerBackend {
                 }
             }
             SctpTransportPolicy::NativePreferred => {
-                let native = if multi {
-                    net_imp::SctpListener::bind_multi(local)
-                } else {
-                    net_imp::SctpListener::bind(local)
-                };
-                match native {
-                    Ok(listener) => Ok(Self::Native(listener)),
-                    Err(err) if is_native_sctp_unsupported(&err) => {
-                        #[cfg(target_os = "linux")]
-                        {
-                            udp_linux::UdpSctpListener::bind(local[0], &udp_config(config)?).map(Self::Udp)
-                        }
-                        #[cfg(not(target_os = "linux"))]
-                        {
-                            let _ = local;
-                            let _ = config;
-                            Err(udp_only_unsupported())
-                        }
-                    }
-                    Err(err) => Err(err),
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
+                {
+                    auto::Listener::bind(local, config, multi).map(Self::Hybrid)
+                }
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
+                {
+                    net_imp::SctpListener::bind(local).map(Self::Native)
                 }
             }
             SctpTransportPolicy::UdpOnly => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
                 {
-                    udp_linux::UdpSctpListener::bind(local[0], &udp_config(config)?).map(Self::Udp)
+                    udp::UdpSctpListener::bind_multi(local, &udp_config(config)?).map(Self::Udp)
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
                 {
                     let _ = local;
                     let _ = config;
@@ -1108,96 +2098,292 @@ impl SctpListenerBackend {
 
     fn accept(&self) -> io::Result<(SctpStreamBackend, SocketAddr)> {
         match self {
-            Self::Native(inner) => inner.accept().map(|(stream, addr)| (SctpStreamBackend::Native(stream), addr)),
-            #[cfg(target_os = "linux")]
-            Self::Udp(inner) => inner.accept().map(|(stream, addr)| (SctpStreamBackend::Udp(stream), addr)),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.accept(),
+            Self::Native(inner) => {
+                inner.accept().map(|(stream, addr)| (SctpStreamBackend::Native(stream), addr))
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => {
+                inner.accept().map(|(stream, addr)| (SctpStreamBackend::Udp(stream), addr))
+            }
         }
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.local_addr(),
             Self::Native(inner) => inner.socket_addr(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.local_addr(),
         }
     }
 
     fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.local_addrs(),
             Self::Native(inner) => inner.local_addrs(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.local_addrs(),
         }
     }
 
     fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_init_options(opts),
             Self::Native(inner) => inner.set_init_options(opts),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_init_options(opts),
         }
     }
 
     fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.subscribe_events(mask),
             Self::Native(inner) => inner.subscribe_events(mask),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.subscribe_events(mask),
         }
     }
 
     fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_rto_info(info),
             Self::Native(inner) => inner.set_rto_info(info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_rto_info(info),
         }
     }
 
     fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_delayed_sack(info),
             Self::Native(inner) => inner.set_delayed_sack(info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_delayed_sack(info),
         }
     }
 
     fn set_max_burst(&self, value: u32) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_max_burst(value),
             Self::Native(inner) => inner.set_max_burst(value),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_max_burst(value),
         }
     }
 
     fn set_maxseg(&self, value: u32) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_maxseg(value),
             Self::Native(inner) => inner.set_maxseg(value),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_maxseg(value),
         }
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_nonblocking(nonblocking),
             Self::Native(inner) => inner.set_nonblocking(nonblocking),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_nonblocking(nonblocking),
         }
     }
 
     fn take_error(&self) -> io::Result<Option<io::Error>> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.take_error(),
             Self::Native(inner) => inner.take_error(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.take_error(),
         }
     }
 
     fn duplicate(&self) -> io::Result<Self> {
         match self {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.duplicate().map(Self::Hybrid),
             Self::Native(inner) => inner.duplicate().map(Self::Native),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.try_clone().map(Self::Udp),
         }
     }
@@ -1207,72 +2393,219 @@ impl SctpSocketBackend {
     fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceiveFrom> {
         match self {
             Self::Native(inner) => inner.recv_message(buf),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.recv_message(buf),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.recv_message(buf),
         }
     }
 
-    fn recv_with_info(&self, buf: &mut [u8]) -> io::Result<(usize, Option<SctpRecvInfo>, Option<SocketAddr>)> {
+    fn recv_with_info(
+        &self,
+        buf: &mut [u8],
+    ) -> io::Result<(usize, Option<SctpRecvInfo>, Option<SocketAddr>)> {
         match self {
             Self::Native(inner) => inner.recv_with_info(buf),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.recv_with_info(buf),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.recv_with_info(buf),
         }
     }
 
     fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
         match self {
             Self::Native(inner) => inner.assoc_status(assoc_id),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.assoc_status(assoc_id),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.assoc_status(assoc_id),
         }
     }
 
     fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStreamBackend> {
         match self {
             Self::Native(inner) => inner.peeloff(assoc_id).map(SctpStreamBackend::Native),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.peeloff(assoc_id),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.peeloff(assoc_id).map(SctpStreamBackend::Udp),
         }
     }
 
     fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         match self {
             Self::Native(inner) => inner.set_read_timeout(dur),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_read_timeout(dur),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.set_read_timeout(dur),
         }
     }
 
     fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         match self {
             Self::Native(inner) => inner.set_write_timeout(dur),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_write_timeout(dur),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.set_write_timeout(dur),
         }
     }
 
     fn read_timeout(&self) -> io::Result<Option<Duration>> {
         match self {
             Self::Native(inner) => inner.read_timeout(),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.read_timeout(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.read_timeout(),
         }
     }
 
     fn write_timeout(&self) -> io::Result<Option<Duration>> {
         match self {
             Self::Native(inner) => inner.write_timeout(),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.write_timeout(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.write_timeout(),
         }
     }
 
     fn take_error(&self) -> io::Result<Option<io::Error>> {
         match self {
             Self::Native(inner) => inner.take_error(),
-            #[cfg(target_os = "linux")]
-            Self::Udp(_) => Err(udp_socket_operation_unsupported()),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.take_error(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Udp(inner) => inner.take_error(),
         }
     }
 
@@ -1286,34 +2619,49 @@ impl SctpSocketBackend {
                 }
             }
             SctpTransportPolicy::NativePreferred => {
-                let native = if multi {
-                    net_imp::SctpSocket::bind_multi(local)
-                } else {
-                    net_imp::SctpSocket::bind(local)
-                };
-                match native {
-                    Ok(socket) => Ok(Self::Native(socket)),
-                    Err(err) if is_native_sctp_unsupported(&err) => {
-                        #[cfg(target_os = "linux")]
-                        {
-                            udp_linux::UdpSctpSocket::bind(local[0], &udp_config(config)?).map(Self::Udp)
-                        }
-                        #[cfg(not(target_os = "linux"))]
-                        {
-                            let _ = local;
-                            let _ = config;
-                            Err(udp_only_unsupported())
-                        }
-                    }
-                    Err(err) => Err(err),
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
+                {
+                    many::Many::bind(local, config, multi).map(Self::Hybrid)
+                }
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
+                {
+                    Err(udp_only_unsupported())
                 }
             }
             SctpTransportPolicy::UdpOnly => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
                 {
-                    udp_linux::UdpSctpSocket::bind(local[0], &udp_config(config)?).map(Self::Udp)
+                    udp::UdpSctpSocket::bind_multi(local, &udp_config(config)?, true).map(Self::Udp)
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
                 {
                     let _ = local;
                     let _ = config;
@@ -1326,7 +2674,23 @@ impl SctpSocketBackend {
     fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         match self {
             Self::Native(inner) => inner.local_addrs(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.local_addrs(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.local_addrs(),
         }
     }
@@ -1334,7 +2698,23 @@ impl SctpSocketBackend {
     fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
         match self {
             Self::Native(inner) => inner.set_init_options(opts),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_init_options(opts),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_init_options(opts),
         }
     }
@@ -1342,7 +2722,23 @@ impl SctpSocketBackend {
     fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         match self {
             Self::Native(inner) => inner.subscribe_events(mask),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.subscribe_events(mask),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.subscribe_events(mask),
         }
     }
@@ -1350,7 +2746,23 @@ impl SctpSocketBackend {
     fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
         match self {
             Self::Native(inner) => inner.set_autoclose(seconds),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_autoclose(seconds),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_autoclose(seconds),
         }
     }
@@ -1363,7 +2775,23 @@ impl SctpSocketBackend {
     ) -> io::Result<usize> {
         match self {
             Self::Native(inner) => inner.send_to_with_info(buf, addr, info),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.send_to_with_info(buf, addr, info),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.send_to_with_info(buf, addr, info),
         }
     }
@@ -1371,7 +2799,23 @@ impl SctpSocketBackend {
     fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         match self {
             Self::Native(inner) => inner.assoc_ids(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.assoc_ids(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.assoc_ids(),
         }
     }
@@ -1379,7 +2823,23 @@ impl SctpSocketBackend {
     fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         match self {
             Self::Native(inner) => inner.set_nonblocking(nonblocking),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.set_nonblocking(nonblocking),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.set_nonblocking(nonblocking),
         }
     }
@@ -1387,7 +2847,23 @@ impl SctpSocketBackend {
     fn duplicate(&self) -> io::Result<Self> {
         match self {
             Self::Native(inner) => inner.duplicate().map(Self::Native),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Hybrid(inner) => inner.duplicate().map(Self::Hybrid),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             Self::Udp(inner) => inner.try_clone().map(Self::Udp),
         }
     }
@@ -1406,7 +2882,8 @@ impl SctpStream {
         config: SctpTransportConfig,
     ) -> io::Result<SctpStream> {
         let addrs = resolve_socket_addrs(addr)?;
-        SctpStreamBackend::connect(&addrs, SctpInitOptions::default(), config, false).map(SctpStream)
+        SctpStreamBackend::connect(&addrs, SctpInitOptions::default(), config, false)
+            .map(SctpStream)
     }
 
     /// Connects to a single remote SCTP endpoint after applying `SCTP_INITMSG`.
@@ -1448,7 +2925,11 @@ impl SctpStream {
         remote: &SctpMultiAddr,
         opts: SctpInitOptions,
     ) -> io::Result<SctpStream> {
-        Self::connect_multi_with_init_options_and_config(remote, opts, SctpTransportConfig::default())
+        Self::connect_multi_with_init_options_and_config(
+            remote,
+            opts,
+            SctpTransportConfig::default(),
+        )
     }
 
     /// Connects to a remote multi-address SCTP endpoint after applying `SCTP_INITMSG`
@@ -1987,8 +3468,28 @@ impl AsInner<net_imp::SctpStream> for SctpStream {
     fn as_inner(&self) -> &net_imp::SctpStream {
         match &self.0 {
             SctpStreamBackend::Native(inner) => inner,
-            #[cfg(target_os = "linux")]
-            SctpStreamBackend::Udp(_) => panic!("UDP-encapsulated SCTP stream has no native inner socket"),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpStreamBackend::Pending(_) => {
+                panic!("selected SCTP stream has no borrowed native socket")
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpStreamBackend::Udp(_) => {
+                panic!("UDP-encapsulated SCTP stream has no native inner socket")
+            }
         }
     }
 }
@@ -2003,8 +3504,28 @@ impl IntoInner<net_imp::SctpStream> for SctpStream {
     fn into_inner(self) -> net_imp::SctpStream {
         match self.0 {
             SctpStreamBackend::Native(inner) => inner,
-            #[cfg(target_os = "linux")]
-            SctpStreamBackend::Udp(_) => panic!("UDP-encapsulated SCTP stream has no native inner socket"),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpStreamBackend::Pending(_) => {
+                panic!("selected SCTP stream has no borrowed native socket")
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpStreamBackend::Udp(_) => {
+                panic!("UDP-encapsulated SCTP stream has no native inner socket")
+            }
         }
     }
 }
@@ -2013,7 +3534,25 @@ impl AsInner<net_imp::SctpListener> for SctpListener {
     fn as_inner(&self) -> &net_imp::SctpListener {
         match &self.0 {
             SctpListenerBackend::Native(inner) => inner,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpListenerBackend::Hybrid(_) => {
+                panic!("hybrid SCTP listener has no single native socket")
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             SctpListenerBackend::Udp(_) => {
                 panic!("UDP-encapsulated SCTP listener has no native inner socket")
             }
@@ -2031,7 +3570,25 @@ impl IntoInner<net_imp::SctpListener> for SctpListener {
     fn into_inner(self) -> net_imp::SctpListener {
         match self.0 {
             SctpListenerBackend::Native(inner) => inner,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpListenerBackend::Hybrid(_) => {
+                panic!("hybrid SCTP listener has no single native socket")
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             SctpListenerBackend::Udp(_) => {
                 panic!("UDP-encapsulated SCTP listener has no native inner socket")
             }
@@ -2043,8 +3600,26 @@ impl AsInner<net_imp::SctpSocket> for SctpSocket {
     fn as_inner(&self) -> &net_imp::SctpSocket {
         match &self.0 {
             SctpSocketBackend::Native(inner) => inner,
-            #[cfg(target_os = "linux")]
-            SctpSocketBackend::Udp(_) => panic!("UDP-encapsulated SCTP socket has no native inner socket"),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpSocketBackend::Hybrid(_) => panic!("hybrid SCTP socket has no native inner socket"),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpSocketBackend::Udp(_) => {
+                panic!("UDP-encapsulated SCTP socket has no native inner socket")
+            }
         }
     }
 }
@@ -2059,8 +3634,26 @@ impl IntoInner<net_imp::SctpSocket> for SctpSocket {
     fn into_inner(self) -> net_imp::SctpSocket {
         match self.0 {
             SctpSocketBackend::Native(inner) => inner,
-            #[cfg(target_os = "linux")]
-            SctpSocketBackend::Udp(_) => panic!("UDP-encapsulated SCTP socket has no native inner socket"),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpSocketBackend::Hybrid(_) => panic!("hybrid SCTP socket has no native inner socket"),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpSocketBackend::Udp(_) => {
+                panic!("UDP-encapsulated SCTP socket has no native inner socket")
+            }
         }
     }
 }
@@ -2070,8 +3663,28 @@ impl fmt::Debug for SctpStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             SctpStreamBackend::Native(inner) => inner.fmt(f),
-            #[cfg(target_os = "linux")]
-            SctpStreamBackend::Udp(_) => f.debug_struct("SctpStream").field("transport", &"udp").finish(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpStreamBackend::Pending(_) => {
+                f.debug_struct("SctpStream").field("transport", &"auto").finish()
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpStreamBackend::Udp(_) => {
+                f.debug_struct("SctpStream").field("transport", &"udp").finish()
+            }
         }
     }
 }
@@ -2081,7 +3694,25 @@ impl fmt::Debug for SctpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             SctpListenerBackend::Native(inner) => inner.fmt(f),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpListenerBackend::Hybrid(_) => {
+                f.debug_struct("SctpListener").field("transport", &"native+udp").finish()
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
             SctpListenerBackend::Udp(_) => {
                 f.debug_struct("SctpListener").field("transport", &"udp").finish()
             }
@@ -2094,8 +3725,28 @@ impl fmt::Debug for SctpSocket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             SctpSocketBackend::Native(inner) => inner.fmt(f),
-            #[cfg(target_os = "linux")]
-            SctpSocketBackend::Udp(_) => f.debug_struct("SctpSocket").field("transport", &"udp").finish(),
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpSocketBackend::Hybrid(_) => {
+                f.debug_struct("SctpSocket").field("transport", &"native+udp").finish()
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            SctpSocketBackend::Udp(_) => {
+                f.debug_struct("SctpSocket").field("transport", &"udp").finish()
+            }
         }
     }
 }
