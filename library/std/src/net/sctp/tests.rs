@@ -37,6 +37,19 @@ mod udp_transport {
     }
 
     #[test]
+    fn udp_bind_candidates_are_not_a_multibind_request() {
+        let good = "127.0.0.1:0".parse().unwrap();
+        let bad = "192.0.2.1:0".parse().unwrap();
+        for addrs in [[good, bad], [bad, good]] {
+            let listener = SctpListener::bind_with_config(&addrs[..], config()).unwrap();
+            assert_eq!(listener.local_addr().unwrap().ip(), good.ip());
+            assert_eq!(listener.local_addrs().unwrap().len(), 1);
+            let socket = SctpSocket::bind_with_config(&addrs[..], config()).unwrap();
+            assert_eq!(socket.local_addrs().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
     fn udp_failed_many_selection_can_retry_on_the_same_socket() {
         let reservation = crate::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let peer = reservation.local_addr().unwrap();
@@ -399,6 +412,7 @@ mod udp_transport {
         assert!(!a.flags.end_of_record);
         assert_eq!(a.info.unwrap().stream, 7);
         assert_eq!(a.info.unwrap().ppid, 0x10203040);
+        assert_eq!(a.info.unwrap().cumtsn, a.info.unwrap().tsn);
         assert_eq!(a.info.unwrap().flags & SCTP_UNORDERED, SCTP_UNORDERED);
         let b = server.recv_message(&mut buf).unwrap();
         assert_eq!(&buf, b"data");

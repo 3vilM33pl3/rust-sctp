@@ -691,6 +691,9 @@ impl Association {
         self.stats
     }
 
+    /// Last contiguous peer TSN accepted, for receive ancillary metadata.
+    pub fn receive_cumulative_tsn(&self) -> u32 { self.peer_last_tsn }
+
     /// Snapshot used by a socket adapter; counters saturate at socket API widths.
     pub fn socket_status(&self) -> (u32, u16, u16, u16, u16, u32, u32, u32, u32, u32) {
         (self.rwnd, self.inflight_queue.len().min(u16::MAX as usize) as u16,

@@ -2035,6 +2035,16 @@ impl SctpStreamBackend {
 
 impl SctpListenerBackend {
     fn bind(local: &[SocketAddr], config: SctpTransportConfig, multi: bool) -> io::Result<Self> {
+        if !multi && local.len() > 1 {
+            let mut error = io::const_error!(io::ErrorKind::AddrNotAvailable, "no usable SCTP bind address");
+            for addr in local {
+                match Self::bind(crate::slice::from_ref(addr), config, false) {
+                    Ok(listener) => return Ok(listener),
+                    Err(e) => error = e,
+                }
+            }
+            return Err(error);
+        }
         match config.policy {
             SctpTransportPolicy::NativeOnly => {
                 if multi {
@@ -2610,6 +2620,16 @@ impl SctpSocketBackend {
     }
 
     fn bind(local: &[SocketAddr], config: SctpTransportConfig, multi: bool) -> io::Result<Self> {
+        if !multi && local.len() > 1 {
+            let mut error = io::const_error!(io::ErrorKind::AddrNotAvailable, "no usable SCTP bind address");
+            for addr in local {
+                match Self::bind(crate::slice::from_ref(addr), config, false) {
+                    Ok(socket) => return Ok(socket),
+                    Err(e) => error = e,
+                }
+            }
+            return Err(error);
+        }
         match config.policy {
             SctpTransportPolicy::NativeOnly => {
                 if multi {

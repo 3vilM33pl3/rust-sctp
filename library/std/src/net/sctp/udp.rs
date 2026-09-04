@@ -1028,6 +1028,7 @@ impl State {
                     _ => {}
                 }
             }
+            let cumtsn = s.protocol.receive_cumulative_tsn();
             for stream_id in s.protocol.stream_ids() {
                 if s.queued_bytes >= QUEUE_BYTES || s.read_closed {
                     break;
@@ -1046,6 +1047,7 @@ impl State {
                         assoc_id: id,
                         ssn,
                         tsn,
+                        cumtsn,
                         flags: if unordered { SCTP_UNORDERED } else { 0 },
                         ..Default::default()
                     };
