@@ -11,6 +11,28 @@ use crate::{ScenarioContract, UdpEncapsulationContract};
 const CONTRACT_TRANSPORT_NATIVE: &str = "sctp4";
 const CONTRACT_TRANSPORT_UDP: &str = "sctp4_udp_encap";
 
+fn native_config() -> SctpTransportConfig {
+    SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn native_conformance_never_uses_the_default_fallback() {
+        assert_eq!(native_config().policy, SctpTransportPolicy::NativeOnly);
+    }
+
+    #[test]
+    fn no_kernel_probe_is_honest_when_running_under_the_test_shim() {
+        if std::env::var_os("SCTP_TEST_NO_KERNEL").is_some() {
+            assert!(!native_sctp_supported());
+            assert_eq!(RequestedTransportProfile::Auto.resolve(), RuntimeTransportProfile::UdpEncap);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestedTransportProfile {
     Auto,
@@ -32,7 +54,8 @@ pub enum RuntimeTransportProfile {
 
 pub fn transport_config_for_contract(contract: &ScenarioContract) -> io::Result<SctpTransportConfig> {
     match contract.transport.as_str() {
-        CONTRACT_TRANSPORT_NATIVE => Ok(SctpTransportConfig::default()),
+        // A native conformance contract must never silently use the fallback.
+        CONTRACT_TRANSPORT_NATIVE => Ok(native_config()),
         CONTRACT_TRANSPORT_UDP => {
             let udp = udp_contract(contract)?;
             Ok(SctpTransportConfig {
@@ -89,7 +112,7 @@ impl RuntimeTransportProfile {
 
 pub fn native_sctp_supported() -> bool {
     let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    match SctpSocket::bind(bind_addr) {
+    match SctpSocket::bind_with_config(bind_addr, native_config()) {
         Ok(sock) => {
             drop(sock);
             true
