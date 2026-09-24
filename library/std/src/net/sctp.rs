@@ -37,12 +37,32 @@ pub struct SctpInitOptions {
 pub enum SctpTransportPolicy {
     /// Use the operating system SCTP stack only.
     NativeOnly,
-    /// Prefer native SCTP, then try UDP after an unsupported-protocol or connection failure.
+    /// Prefer native SCTP, falling back to UDP encapsulation only when the
+    /// operating system has no SCTP support at all (e.g. the protocol is not
+    /// available). A native connection that is refused, reset or times out is
+    /// reported as-is and is **not** silently moved onto the user-space engine.
     /// Listeners and one-to-many sockets accept both transports on the same port.
     #[default]
     NativePreferred,
+    /// Like [`NativePreferred`](Self::NativePreferred), but a one-to-one
+    /// `connect` also falls back to UDP when the native attempt fails with a
+    /// connection error (refused, reset, aborted, unreachable or timed out).
+    /// Opt in only when the peer is known to answer over UDP encapsulation:
+    /// this lets a single forged reset move the connection onto the research
+    /// -grade user-space stack, which has different security properties.
+    NativePreferredWithConnectFallback,
     /// Use SCTP encapsulated in UDP.
     UdpOnly,
+}
+
+/// The transport a connected [`SctpStream`] actually uses.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[unstable(feature = "sctp", issue = "none")]
+pub enum SctpTransport {
+    /// The operating system's native SCTP stack.
+    Native,
+    /// The user-space SCTP-over-UDP engine.
+    Udp,
 }
 
 /// UDP encapsulation settings for RFC 6951 SCTP fallback.
@@ -552,20 +572,39 @@ fn is_native_sctp_unsupported(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::Unsupported || net_imp::sctp_error_means_unsupported(err)
 }
 
-fn should_fallback(err: &io::Error) -> bool {
+/// A native connection error that `NativePreferredWithConnectFallback` retries
+/// over UDP. Deliberately not part of the default policy: an attacker who can
+/// forge one of these would otherwise be able to force the downgrade.
+fn is_connect_fallback_error(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::TimedOut
+    )
+}
+
+/// Whether a failed native `connect` under `policy` should be retried over UDP.
+fn should_fallback(err: &io::Error, policy: SctpTransportPolicy) -> bool {
     is_native_sctp_unsupported(err)
-        || matches!(
-            err.kind(),
-            io::ErrorKind::ConnectionRefused
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::HostUnreachable
-                | io::ErrorKind::NetworkUnreachable
-                | io::ErrorKind::TimedOut
-        )
+        || (policy == SctpTransportPolicy::NativePreferredWithConnectFallback
+            && is_connect_fallback_error(err))
 }
 
 impl SctpStreamBackend {
+    fn transport(&self) -> SctpTransport {
+        match self {
+            Self::Native(_) => SctpTransport::Native,
+            #[cfg(sctp_udp_backend)]
+            Self::Udp(_) => SctpTransport::Udp,
+            #[cfg(sctp_udp_backend)]
+            Self::Pending(inner) => inner.transport(),
+        }
+    }
+
     fn connect_bound<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
         match self {
             #[cfg(sctp_udp_backend)]
@@ -606,7 +645,8 @@ impl SctpStreamBackend {
                     net_imp::SctpStream::connect_with_init_options(addrs, opts).map(Self::Native)
                 }
             }
-            SctpTransportPolicy::NativePreferred => {
+            SctpTransportPolicy::NativePreferred
+            | SctpTransportPolicy::NativePreferredWithConnectFallback => {
                 let native = if multi {
                     net_imp::SctpStream::connect_multi_with_init_options(addrs, opts)
                 } else {
@@ -614,7 +654,7 @@ impl SctpStreamBackend {
                 };
                 match native {
                     Ok(stream) => Ok(Self::Native(stream)),
-                    Err(err) if should_fallback(&err) => {
+                    Err(err) if should_fallback(&err, config.policy) => {
                         #[cfg(sctp_udp_backend)]
                         {
                             {
@@ -667,7 +707,9 @@ impl SctpStreamBackend {
                     net_imp::SctpStream::bind(local[0]).map(Self::Native)
                 }
             }
-            SctpTransportPolicy::NativePreferred | SctpTransportPolicy::UdpOnly => {
+            SctpTransportPolicy::NativePreferred
+            | SctpTransportPolicy::NativePreferredWithConnectFallback
+            | SctpTransportPolicy::UdpOnly => {
                 #[cfg(sctp_udp_backend)]
                 {
                     auto::Bound::bind(local, config, multi).map(Self::Pending)
@@ -1204,7 +1246,8 @@ impl SctpListenerBackend {
                     net_imp::SctpListener::bind(local).map(Self::Native)
                 }
             }
-            SctpTransportPolicy::NativePreferred => {
+            SctpTransportPolicy::NativePreferred
+            | SctpTransportPolicy::NativePreferredWithConnectFallback => {
                 #[cfg(sctp_udp_backend)]
                 {
                     auto::Listener::bind(local, config, multi).map(Self::Hybrid)
@@ -1468,7 +1511,8 @@ impl SctpSocketBackend {
                     net_imp::SctpSocket::bind(local).map(Self::Native)
                 }
             }
-            SctpTransportPolicy::NativePreferred => {
+            SctpTransportPolicy::NativePreferred
+            | SctpTransportPolicy::NativePreferredWithConnectFallback => {
                 #[cfg(sctp_udp_backend)]
                 {
                     many::Many::bind(local, config, multi).map(Self::Hybrid)
@@ -1691,6 +1735,21 @@ impl SctpStream {
     /// Returns the primary remote address of this association.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
+    }
+
+    /// Returns whether this stream is carried by the operating system's native
+    /// SCTP stack or by the user-space SCTP-over-UDP engine.
+    ///
+    /// With [`SctpTransportPolicy::NativePreferred`] a stream can use either
+    /// transport depending on host support; callers that must not run over the
+    /// user-space engine can assert on the result.
+    ///
+    /// While a non-blocking connect is still selecting a transport this reports
+    /// [`SctpTransport::Native`]; the choice is final once the connect completes.
+    #[unstable(feature = "sctp", issue = "none")]
+    #[must_use]
+    pub fn transport(&self) -> SctpTransport {
+        self.0.transport()
     }
 
     /// Returns one local address currently used by this socket.

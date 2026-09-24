@@ -2,10 +2,18 @@
 
 This experimental fork exposes `std::net::{SctpStream, SctpListener, SctpSocket}`
 behind `#![feature(sctp)]`. Ordinary constructors use `NativePreferred`:
-try kernel SCTP first, then user-space SCTP over UDP on a protocol-unavailable
-or connection-refused/reset/aborted/unreachable/timeout error. Invalid input,
-permission failures, local bind failures and resource exhaustion do not trigger
-fallback. Native timeouts are not shortened or raced against UDP.
+try kernel SCTP first, then user-space SCTP over UDP **only when the host has
+no SCTP support at all** (a protocol-unavailable error). A native connection
+that is refused, reset, aborted, unreachable or times out is reported to the
+caller unchanged — it does not silently move onto the user-space engine, so a
+forged reset cannot force the downgrade. Invalid input, permission failures,
+local bind failures and resource exhaustion never trigger fallback either.
+
+To also fall back on those connection errors — only safe when the peer is known
+to answer over UDP encapsulation — opt in with
+`SctpTransportPolicy::NativePreferredWithConnectFallback`. Either way, native
+timeouts are not shortened or raced against UDP, and `SctpStream::transport()`
+reports which transport a connected stream actually uses.
 
 Listeners and one-to-many sockets bind UDP plus native SCTP when available.
 They accept either transport. UDP binding is required even on native-capable

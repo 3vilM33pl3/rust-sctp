@@ -39,7 +39,7 @@ pub use self::sctp::{
     SctpAuthKey, SctpDelayedSackInfo, SctpEventMask, SctpInitOptions, SctpListener, SctpMultiAddr,
     SctpNextInfo, SctpNotification, SctpPrInfo, SctpPrPolicy, SctpReceive, SctpReceiveFlags,
     SctpReceiveFrom, SctpRecvInfo, SctpRtoInfo, SctpScheduler, SctpSendInfo, SctpSocket,
-    SctpStream, SctpTransportConfig, SctpTransportPolicy, SctpUdpConfig,
+    SctpStream, SctpTransport, SctpTransportConfig, SctpTransportPolicy, SctpUdpConfig,
 };
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::socket_addr::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};

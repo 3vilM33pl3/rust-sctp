@@ -38,6 +38,7 @@ struct State {
     nonblocking: bool,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
+    policy: SctpTransportPolicy,
     error: Option<(io::ErrorKind, String)>,
 }
 
@@ -52,6 +53,7 @@ impl Many {
         config: SctpTransportConfig,
         multi: bool,
     ) -> io::Result<Self> {
+        let policy = config.policy;
         let config = udp_config(config)?;
         let mut error =
             io::const_error!(io::ErrorKind::AddrInUse, "unable to reserve SCTP/UDP port pair");
@@ -101,6 +103,7 @@ impl Many {
                     nonblocking: false,
                     read_timeout: None,
                     write_timeout: None,
+                    policy,
                     error: None,
                 }),
                 Condvar::new(),
@@ -448,7 +451,7 @@ impl State {
         if self.native_pending == Some(peer) {
             self.native_pending = None;
         }
-        let pending = if should_fallback(&error) {
+        let pending = if should_fallback(&error, self.policy) {
             match self.udp.start_connect(peer) {
                 Ok(id) => Connecting::Udp(id),
                 Err(e) => Connecting::Failed(e.kind(), e.to_string()),
