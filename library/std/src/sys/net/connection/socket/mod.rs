@@ -492,7 +492,10 @@ const SCTP_EVENT_ASSOCIATION: u16 = 0x8001;
 #[cfg(target_os = "linux")]
 const SCTP_EVENT_ADDRESS: u16 = 0x8002;
 #[cfg(target_os = "linux")]
-const SCTP_EVENT_SEND_FAILURE: u16 = 0x8003;
+// `SCTP_SEND_FAILED_EVENT`: carries a `struct sctp_sndinfo`, which is what the
+// parser below reads. The legacy `SCTP_SEND_FAILED` (0x8003) carries the 32-byte
+// `struct sctp_sndrcvinfo` instead and is deliberately not subscribed to.
+const SCTP_EVENT_SEND_FAILURE: u16 = 0x800d;
 #[cfg(target_os = "linux")]
 const SCTP_EVENT_PEER_ERROR: u16 = 0x8004;
 #[cfg(target_os = "linux")]
