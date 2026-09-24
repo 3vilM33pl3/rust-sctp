@@ -583,7 +583,7 @@ impl Bound {
             }
         }
     }
-    pub(super) fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
+    pub(super) fn read_buf(&self, cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
         crate::io::default_read_buf(|b| self.read(b), cursor)
     }
     pub(super) fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
