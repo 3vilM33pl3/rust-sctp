@@ -1210,7 +1210,7 @@ impl SctpStream {
         self.inner.read(buf)
     }
 
-    pub fn read_buf(&self, buf: BorrowedCursor<'_>) -> io::Result<()> {
+    pub fn read_buf(&self, buf: BorrowedCursor<'_, u8>) -> io::Result<()> {
         self.inner.read_buf(buf)
     }
 
@@ -2320,7 +2320,7 @@ impl SctpStream {
         sctp_unsupported()
     }
 
-    pub fn read_buf(&self, _buf: BorrowedCursor<'_>) -> io::Result<()> {
+    pub fn read_buf(&self, _buf: BorrowedCursor<'_, u8>) -> io::Result<()> {
         sctp_unsupported()
     }
 

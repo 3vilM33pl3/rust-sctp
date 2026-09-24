@@ -1900,7 +1900,7 @@ impl SctpStreamBackend {
         }
     }
 
-    fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
+    fn read_buf(&self, cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
         match self {
             #[cfg(any(
                 target_os = "linux",
@@ -3234,7 +3234,7 @@ impl Read for SctpStream {
         self.0.read(buf)
     }
 
-    fn read_buf(&mut self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
+    fn read_buf(&mut self, cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
         self.0.read_buf(cursor)
     }
 
