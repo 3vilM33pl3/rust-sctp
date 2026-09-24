@@ -176,6 +176,33 @@ struct Session {
     last_activity: Instant,
 }
 
+impl Session {
+    /// Record a per-association failure; the association is closed and the
+    /// error is reported on its next read, or as a lost-association
+    /// notification on an endpoint-wide receive.
+    fn fail(&mut self, error: io::Error) {
+        let failure = Failure::from_error(error);
+        self.pending_error = Some(failure.clone());
+        self.failure = Some(failure);
+        self.closed = true;
+        let _ = self.protocol.close();
+    }
+}
+
+/// Errors a UDP socket reports about a specific destination (ICMP feedback),
+/// as opposed to the socket itself being unusable.
+fn is_path_error(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::NetworkDown
+    )
+}
+
 struct State {
     sockets: Vec<UdpSocket>,
     local: Vec<SocketAddr>,
@@ -743,8 +770,8 @@ impl UdpSctpSocket {
                     })
                     .map(|(id, _)| *id)
             });
-            if let Some(id) = selected {
-                let s = state.session_mut(id)?;
+            if let Some(id_selected) = selected {
+                let s = state.session_mut(id_selected)?;
                 let peer = s.peer;
                 if let Some(notification) = s.notifications.pop_front() {
                     return Ok(SctpReceiveFrom {
@@ -773,7 +800,7 @@ impl UdpSctpSocket {
                             flags: m.info.flags,
                             ppid: m.info.ppid,
                             length: (m.data.len() - m.offset) as u32,
-                            assoc_id: id,
+                            assoc_id: id_selected,
                         });
                     }
                     s.last_activity = Instant::now();
@@ -790,6 +817,32 @@ impl UdpSctpSocket {
                 }
                 if let Some(e) = &s.failure {
                     let error = e.error();
+                    if id.is_none() {
+                        // One-to-many receive: report the lost association the way
+                        // the kernel does and keep serving the other peers.
+                        s.failure = None;
+                        if !s.leased {
+                            s.closed = true;
+                        }
+                        if !s.options.events.association {
+                            continue;
+                        }
+                        return Ok(SctpReceiveFrom {
+                            peer_addr: Some(peer),
+                            receive: SctpReceive {
+                                len: 0,
+                                info: None,
+                                notification: Some(SctpNotification::AssociationChange {
+                                    assoc_id: id_selected,
+                                    state: net_imp::SCTP_COMM_LOST,
+                                    error: error.raw_os_error().unwrap_or(0) as u16,
+                                    outbound_streams: 0,
+                                    inbound_streams: 0,
+                                }),
+                                flags: Default::default(),
+                            },
+                        });
+                    }
                     if !s.leased {
                         s.failure = None;
                     }
@@ -952,6 +1005,8 @@ impl State {
                     Ok(pair) => pair,
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    // ICMP errors surfaced on the socket concern one peer, not the endpoint.
+                    Err(e) if is_path_error(&e) => continue,
                     Err(e) => return Err(e),
                 };
                 if n < 12 || u16::from_be_bytes([buf[2], buf[3]]) != self.local[index].port() {
@@ -970,7 +1025,9 @@ impl State {
                 ) {
                     match event {
                         DatagramEvent::NewAssociation(protocol) => {
-                            self.insert(protocol, handle, peer, remote, index, true)?;
+                            // Failing to register (id exhaustion) drops this
+                            // association; existing ones are unaffected.
+                            let _ = self.insert(protocol, handle, peer, remote, index, true);
                         }
                         DatagramEvent::AssociationEvent(event) => {
                             if let Some(id) = self.handles.get(&handle) {
@@ -986,7 +1043,7 @@ impl State {
             }
         }
         let now = self.now();
-        for (&id, s) in &mut self.sessions {
+        'sessions: for (&id, s) in &mut self.sessions {
             if s.options.autoclose != 0
                 && s.connected
                 && !s.write_closed
@@ -1038,13 +1095,27 @@ impl State {
                 if s.queued_bytes >= QUEUE_BYTES || s.read_closed {
                     break;
                 }
-                let mut stream = s.protocol.stream(stream_id).map_err(proto_error)?;
+                let mut stream = match s.protocol.stream(stream_id) {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        s.fail(proto_error(e));
+                        continue 'sessions;
+                    }
+                };
                 while s.queued_bytes < QUEUE_BYTES && stream.is_readable() {
-                    let Some(chunks) = stream.read_sctp().map_err(proto_error)? else {
-                        break;
+                    let chunks = match stream.read_sctp() {
+                        Ok(Some(chunks)) => chunks,
+                        Ok(None) => break,
+                        Err(e) => {
+                            s.fail(proto_error(e));
+                            continue 'sessions;
+                        }
                     };
                     let mut data = vec![0; chunks.len()];
-                    chunks.read(&mut data).map_err(proto_error)?;
+                    if let Err(e) = chunks.read(&mut data) {
+                        s.fail(proto_error(e));
+                        continue 'sessions;
+                    }
                     let (ssn, tsn, unordered) = chunks.receive_metadata();
                     let info = SctpRecvInfo {
                         stream: stream_id,
@@ -1113,8 +1184,15 @@ impl State {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
+                    // A datagram that cannot be sent fails its own association
+                    // (if any); the other associations on this endpoint keep going.
+                    let remote = *remote;
                     self.transmits.pop_front();
-                    return Err(e);
+                    if let Some(s) =
+                        self.sessions.values_mut().find(|s| s.remote_udp == remote && !s.closed)
+                    {
+                        s.fail(e);
+                    }
                 }
             }
         }
