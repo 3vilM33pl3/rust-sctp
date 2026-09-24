@@ -55,6 +55,9 @@ exclude = [
   "compiler/rustc_codegen_cranelift",
   "compiler/rustc_codegen_gcc",
   "src/bootstrap",
+  # Standalone SCTP conformance tool; shares `library/vendor-std/sctp-proto` with std,
+  # which bootstrap would otherwise see as one crate path in two workspaces.
+  "src/tools/sctp-feature-client",
   "tests/rustdoc-gui",
   # HACK(eddyb) This hardcodes the fact that our CI uses `/checkout/obj`.
   "obj",
