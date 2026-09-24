@@ -37,6 +37,10 @@ libc = { version = "0.2.189", default-features = false, features = [
     'rustc-dep-of-std',
 ], public = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
+bytes = { version = "1.5.0", default-features = false }
+sctp-proto = { path = "../vendor-std/sctp-proto", default-features = false, features = ["rustc-dep-of-std"] }
+
 [target.'cfg(all(not(target_os = "aix"), not(all(windows, target_env = "msvc", not(target_vendor = "uwp")))))'.dependencies]
 object = { version = "0.39", default-features = false, optional = true, features = [
     'read_core',

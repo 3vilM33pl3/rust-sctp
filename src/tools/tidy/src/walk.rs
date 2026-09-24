@@ -17,6 +17,7 @@ pub fn filter_dirs(path: &Path) -> bool {
         "library/compiler-builtins",
         "library/portable-simd",
         "library/stdarch",
+        "library/vendor-std",
         "src/tools/cargo",
         "src/tools/clippy",
         "src/tools/libcxx-version",

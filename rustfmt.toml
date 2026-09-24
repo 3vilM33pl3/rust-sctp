@@ -31,6 +31,7 @@ ignore = [
     "library/compiler-builtins",
     "library/portable-simd",
     "library/stdarch",
+    "library/vendor-std",   # vendored crates for the std SCTP-over-UDP engine
     "src/doc/book",
     "src/doc/edition-guide",
     "src/doc/embedded-book",
