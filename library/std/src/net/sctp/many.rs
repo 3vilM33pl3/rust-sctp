@@ -492,7 +492,7 @@ impl State {
                         &received.receive.notification
                     {
                         // FreeBSD's notification state enumeration is one-based.
-                        let failed = if cfg!(target_os = "freebsd") { 5 } else { 4 };
+                        let failed = net_imp::SCTP_CANT_STR_ASSOC;
                         if *state == failed {
                             if let Some(peer) = self.native_pending {
                                 self.fallback(
@@ -510,7 +510,7 @@ impl State {
                 if let Some(raw_id) = received_id(&received.receive) {
                     let route = if use_udp { Route::Udp(raw_id) } else { Route::Native(raw_id) };
                     let up = matches!(received.receive.notification, Some(SctpNotification::AssociationChange { state, .. })
-                        if state == if cfg!(target_os = "freebsd") { 1 } else { 0 });
+                        if state == net_imp::SCTP_COMM_UP);
                     if received.receive.info.is_none() && !up && !self.reverse.contains_key(&route)
                     {
                         continue;
@@ -548,7 +548,7 @@ impl State {
         if let Some(native) = &native {
             for id in native.assoc_ids()? {
                 if let Ok(status) = native.assoc_status(id) {
-                    if status.state == if cfg!(target_os = "freebsd") { 8 } else { 4 } {
+                    if status.state == net_imp::SCTP_STATE_ESTABLISHED {
                         self.register(Route::Native(id), status.primary_addr)?;
                     }
                 }

@@ -379,6 +379,37 @@ pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
 
 #[cfg(target_os = "linux")]
 const IPPROTO_SCTP_LINUX: c_int = 132;
+
+// Platform values behind the `std::net` SCTP constants and the association
+// states reported by `SctpAssocStatus` / `SctpNotification::AssociationChange`.
+// `sctp_sstat_state` (CLOSED = 1, ESTABLISHED = 4) and `sctp_sac_state`
+// (COMM_UP = 0, CANT_STR_ASSOC = 4) from `<linux/sctp.h>`.
+#[cfg(target_os = "linux")]
+pub const SCTP_UNORDERED: u16 = 1;
+#[cfg(target_os = "linux")]
+pub const SCTP_PR_TTL: u16 = 0x0010;
+#[cfg(target_os = "linux")]
+pub const SCTP_PR_RTX: u16 = 0x0020;
+#[cfg(target_os = "linux")]
+pub const SCTP_PR_PRIORITY: u16 = 0x0030;
+#[cfg(target_os = "linux")]
+pub const SCTP_STATE_CLOSED: i32 = 1;
+#[cfg(target_os = "linux")]
+pub const SCTP_STATE_ESTABLISHED: i32 = 4;
+#[cfg(target_os = "linux")]
+pub const SCTP_COMM_UP: u16 = 0;
+#[cfg(target_os = "linux")]
+pub const SCTP_CANT_STR_ASSOC: u16 = 4;
+
+/// Whether an error from a native SCTP socket call means the kernel has no
+/// SCTP support at all (as opposed to a per-connection failure).
+#[cfg(target_os = "linux")]
+pub fn sctp_error_means_unsupported(err: &io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(c::EPROTONOSUPPORT | c::EAFNOSUPPORT | c::ESOCKTNOSUPPORT | c::ENOPROTOOPT)
+    )
+}
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_INITMSG: c_int = 2;
 #[cfg(target_os = "linux")]
