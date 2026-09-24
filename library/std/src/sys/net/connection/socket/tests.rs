@@ -111,3 +111,52 @@ fn max_send_len_within_platform_limit() {
         assert_eq!(MAX_SEND_LEN, <wrlen_t>::MAX as usize);
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parse_send_failed_event_uses_sndinfo_layout() {
+    // struct sctp_send_failed_event: type(2) flags(2) length(4) error(4)
+    // sctp_sndinfo{stream(2) flags(2) ppid(4) context(4) assoc_id(4)} assoc_id(4) data[]
+    let data = b"payload";
+    let mut payload = vec![0u8; 32 + data.len()];
+    payload[0..2].copy_from_slice(&SCTP_EVENT_SEND_FAILURE.to_ne_bytes());
+    payload[2..4].copy_from_slice(&0x0002u16.to_ne_bytes()); // SCTP_DATA_SENT
+    let total = payload.len() as u32;
+    payload[4..8].copy_from_slice(&total.to_ne_bytes());
+    payload[8..12].copy_from_slice(&5u32.to_ne_bytes());
+    payload[12..14].copy_from_slice(&3u16.to_ne_bytes());
+    payload[14..16].copy_from_slice(&SCTP_UNORDERED.to_ne_bytes());
+    payload[16..20].copy_from_slice(&0x1234u32.to_ne_bytes());
+    payload[20..24].copy_from_slice(&77u32.to_ne_bytes());
+    payload[24..28].copy_from_slice(&9i32.to_ne_bytes());
+    payload[28..32].copy_from_slice(&9i32.to_ne_bytes());
+    payload[32..].copy_from_slice(data);
+
+    assert_eq!(
+        parse_sctp_notification(&payload).unwrap(),
+        SctpNotification::SendFailure {
+            assoc_id: 9,
+            flags: 0x0002,
+            error: 5,
+            info: Some(crate::net::SctpSendInfo {
+                stream: 3,
+                flags: SCTP_UNORDERED,
+                ppid: 0x1234,
+                context: 77,
+                assoc_id: 9,
+            }),
+            data: data.to_vec(),
+        }
+    );
+
+    // The legacy SCTP_SEND_FAILED (sctp_sndrcvinfo layout) is not subscribed
+    // to and must surface as an unknown notification rather than be misread.
+    let mut legacy = vec![0u8; 48];
+    legacy[0..2].copy_from_slice(&0x8003u16.to_ne_bytes());
+    legacy[4..8].copy_from_slice(&48u32.to_ne_bytes());
+    legacy[44..48].copy_from_slice(&9i32.to_ne_bytes());
+    assert!(matches!(
+        parse_sctp_notification(&legacy).unwrap(),
+        SctpNotification::Unknown { notification_type: 0x8003, .. }
+    ));
+}
