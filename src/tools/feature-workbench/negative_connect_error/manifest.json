@@ -1,0 +1,41 @@
+{
+  "feature_id": "negative_connect_error",
+  "language": "rust",
+  "build": [
+    {
+      "cwd": "{lang_root}",
+      "env": {
+        "RUSTC": "{rust_stage1_rustc}",
+        "CARGO_TARGET_DIR": "{rust_target_dir}"
+      },
+      "command": [
+        "{rust_cargo}",
+        "build",
+        "--manifest-path",
+        "{helper_manifest}"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "invalid_destination_surfaces_connect_or_send_error",
+      "title": "Invalid destination surfaces a connection error",
+      "timeout_seconds": 20,
+      "client": {
+        "command": [
+          "{helper_binary}",
+          "client",
+          "--connect",
+          "0.0.0.0:1",
+          "--expect-failure",
+          "connect_or_send",
+          "--message",
+          "should-not-send:1:1"
+        ]
+      },
+      "assertions": {
+        "expected_failure": ["connect", "send"]
+      }
+    }
+  ]
+}
