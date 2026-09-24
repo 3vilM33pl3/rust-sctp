@@ -612,6 +612,18 @@ fn resolve_socket_addrs<A: ToSocketAddrs>(addr: A) -> io::Result<Vec<SocketAddr>
     }
 }
 
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
+fn udp_only_unsupported() -> io::Error {
+    io::const_error!(io::ErrorKind::Unsupported, "SCTP over UDP is not available on this target")
+}
+
 fn udp_config(config: SctpTransportConfig) -> io::Result<SctpUdpConfig> {
     Ok(config.udp.unwrap_or_default())
 }
