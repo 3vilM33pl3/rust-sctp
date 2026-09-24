@@ -1240,8 +1240,10 @@ impl UdpSctpStream {
     pub(super) fn try_clone(&self) -> io::Result<Self> {
         Ok(self.clone())
     }
-    pub(super) fn set_nodelay(&self, on: bool) -> io::Result<()> {
-        if on { Ok(()) } else { Err(unsupported()) }
+    pub(super) fn set_nodelay(&self, _on: bool) -> io::Result<()> {
+        // The engine has no Nagle-style coalescing to toggle; report that honestly
+        // instead of accepting `true` as a no-op.
+        Err(unsupported())
     }
     pub(super) fn set_init_options(&self, _opts: SctpInitOptions) -> io::Result<()> {
         Err(unsupported())
