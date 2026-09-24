@@ -24,6 +24,7 @@ pub const SCTP_PR_PRIORITY: u16 = 2;
 pub const SCTP_STATE_CLOSED: i32 = 0;
 pub const SCTP_STATE_ESTABLISHED: i32 = 8;
 pub const SCTP_COMM_UP: u16 = 1;
+pub const SCTP_COMM_LOST: u16 = 2;
 pub const SCTP_CANT_STR_ASSOC: u16 = 5;
 
 /// Whether an error from a native SCTP socket call means the kernel has no

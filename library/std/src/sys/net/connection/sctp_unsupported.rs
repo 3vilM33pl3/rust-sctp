@@ -21,6 +21,8 @@ pub const SCTP_STATE_ESTABLISHED: i32 = 4;
 #[allow(dead_code)] // read by the UDP fallback, absent on some targets
 pub const SCTP_COMM_UP: u16 = 0;
 #[allow(dead_code)] // read by the UDP fallback, absent on some targets
+pub const SCTP_COMM_LOST: u16 = 1;
+#[allow(dead_code)] // read by the UDP fallback, absent on some targets
 pub const SCTP_CANT_STR_ASSOC: u16 = 4;
 
 /// Whether an error from a native SCTP socket call means the kernel has no
