@@ -1,13 +1,6 @@
 use crate::io::ErrorKind;
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-))]
+#[cfg(sctp_udp_backend)]
 mod udp_transport {
     use super::*;
     use crate::net::{SCTP_UNORDERED, SctpTransportConfig, SctpTransportPolicy, SctpUdpConfig};
@@ -526,14 +519,7 @@ fn multi_addr_accepts_valid_ipv4_set() {
     assert_eq!(m.addrs(), addrs.as_slice());
 }
 
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-)))]
+#[cfg(not(sctp_udp_backend))]
 #[test]
 fn unsupported_platform_returns_unsupported_error() {
     let err = SctpListener::bind("127.0.0.1:0").unwrap_err();

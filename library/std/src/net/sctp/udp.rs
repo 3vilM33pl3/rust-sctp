@@ -852,9 +852,9 @@ impl UdpSctpSocket {
         Ok(SctpAssocStatus {
             assoc_id: id,
             state: if s.closed {
-                if cfg!(target_os = "freebsd") { 0 } else { 1 }
+                net_imp::SCTP_STATE_CLOSED
             } else if s.connected {
-                if cfg!(target_os = "freebsd") { 8 } else { 4 }
+                net_imp::SCTP_STATE_ESTABLISHED
             } else {
                 2
             },
@@ -1011,7 +1011,7 @@ impl State {
                             // SCTP_COMM_UP is a notification state, not SCTP_ESTABLISHED.
                             s.notifications.push_back(SctpNotification::AssociationChange {
                                 assoc_id: id,
-                                state: if cfg!(target_os = "freebsd") { 1 } else { 0 },
+                                state: net_imp::SCTP_COMM_UP,
                                 error: 0,
                                 outbound_streams: p.4,
                                 inbound_streams: p.3,

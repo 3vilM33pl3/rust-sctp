@@ -12,6 +12,28 @@ unsafe extern "C" {
 }
 
 const IPPROTO_SCTP_FREEBSD: c_int = c::IPPROTO_SCTP;
+
+// Platform values behind the `std::net` SCTP constants and the association
+// states reported by `SctpAssocStatus` / `SctpNotification::AssociationChange`.
+// `SCTP_CLOSED` = 0, `SCTP_ESTABLISHED` = 8, `SCTP_COMM_UP` = 1 and
+// `SCTP_CANT_STR_ASSOC` = 5 from `<netinet/sctp.h>`.
+pub const SCTP_UNORDERED: u16 = 0x0400;
+pub const SCTP_PR_TTL: u16 = 1;
+pub const SCTP_PR_RTX: u16 = 3;
+pub const SCTP_PR_PRIORITY: u16 = 2;
+pub const SCTP_STATE_CLOSED: i32 = 0;
+pub const SCTP_STATE_ESTABLISHED: i32 = 8;
+pub const SCTP_COMM_UP: u16 = 1;
+pub const SCTP_CANT_STR_ASSOC: u16 = 5;
+
+/// Whether an error from a native SCTP socket call means the kernel has no
+/// SCTP support at all (as opposed to a per-connection failure).
+pub fn sctp_error_means_unsupported(err: &io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(c::EPROTONOSUPPORT | c::EAFNOSUPPORT | c::ESOCKTNOSUPPORT | c::ENOPROTOOPT)
+    )
+}
 const SCTP_SOCKOPT_RTOINFO: c_int = 0x00000001;
 const SCTP_SOCKOPT_INITMSG: c_int = 0x00000003;
 const SCTP_SOCKOPT_NODELAY: c_int = 0x00000004;
