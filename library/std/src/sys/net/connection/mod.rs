@@ -35,6 +35,13 @@ cfg_select! {
     }
 }
 
+// SCTP socket types for every backend without a native adapter (the Linux and
+// FreeBSD arms of `socket` provide real ones), so `std::net::Sctp*` always exists.
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+mod sctp_unsupported;
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+pub use sctp_unsupported::*;
+
 #[cfg_attr(
     // Make sure that this is used on some platforms at least.
     not(any(target_os = "linux", target_os = "windows")),
