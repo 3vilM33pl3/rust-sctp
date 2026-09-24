@@ -76,6 +76,16 @@ fn main() {
         println!("cargo:rustc-cfg=restricted_std");
     }
 
+    // The user-space SCTP-over-UDP fallback (`std::net::Sctp*` with the
+    // `UdpOnly`/`NativePreferred` policies) is built on the targets whose
+    // `library/std/Cargo.toml` pulls in `sctp-proto`.
+    println!("cargo:rustc-check-cfg=cfg(sctp_udp_backend)");
+    if matches!(
+        target_os.as_str(),
+        "linux" | "macos" | "freebsd" | "openbsd" | "netbsd" | "dragonfly"
+    ) {
+        println!("cargo:rustc-cfg=sctp_udp_backend");
+    }
     println!("cargo:rustc-check-cfg=cfg(backtrace_in_libstd)");
     println!("cargo:rustc-cfg=backtrace_in_libstd");
 

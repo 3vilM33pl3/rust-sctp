@@ -2,10 +2,33 @@
 //! native SCTP adapter. Used by every `sys::net::connection` backend except the
 //! Linux and FreeBSD arms of `socket`, so `std::net::Sctp*` exists on all targets.
 
+use crate::fmt;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
 use crate::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use crate::time::Duration;
-use crate::fmt;
+
+// Platform values behind the `std::net` SCTP constants and the association
+// states reported by `SctpAssocStatus` / `SctpNotification::AssociationChange`.
+// No native stack: the Linux numbering is used for the user-space fallback.
+pub const SCTP_UNORDERED: u16 = 1;
+pub const SCTP_PR_TTL: u16 = 0x0010;
+pub const SCTP_PR_RTX: u16 = 0x0020;
+pub const SCTP_PR_PRIORITY: u16 = 0x0030;
+#[allow(dead_code)] // read by the UDP fallback, absent on some targets
+pub const SCTP_STATE_CLOSED: i32 = 1;
+#[allow(dead_code)] // read by the UDP fallback, absent on some targets
+pub const SCTP_STATE_ESTABLISHED: i32 = 4;
+#[allow(dead_code)] // read by the UDP fallback, absent on some targets
+pub const SCTP_COMM_UP: u16 = 0;
+#[allow(dead_code)] // read by the UDP fallback, absent on some targets
+pub const SCTP_CANT_STR_ASSOC: u16 = 4;
+
+/// Whether an error from a native SCTP socket call means the kernel has no
+/// SCTP support at all (as opposed to a per-connection failure).
+pub fn sctp_error_means_unsupported(err: &io::Error) -> bool {
+    let _ = err;
+    false
+}
 
 #[inline]
 fn sctp_unsupported<T>() -> io::Result<T> {
@@ -340,6 +363,8 @@ impl fmt::Debug for SctpListener {
 pub struct SctpSocket;
 
 impl SctpSocket {
+    // Only the hybrid one-to-many endpoint calls this.
+    #[allow(dead_code)]
     pub fn begin_association(&self, _peer: SocketAddr) -> io::Result<()> {
         sctp_unsupported()
     }
