@@ -14,6 +14,16 @@ mod udp_transport {
         }
     }
 
+    // Opt in to UDP fallback on a native connection error. The tests below reach
+    // a peer that only listens over UDP, so on a kernel-SCTP host the native
+    // attempt is refused; the default policy would (correctly) not fall back.
+    fn connect_fallback() -> SctpTransportConfig {
+        SctpTransportConfig {
+            policy: SctpTransportPolicy::NativePreferredWithConnectFallback,
+            udp: None,
+        }
+    }
+
     #[test]
     fn udp_autoclose_and_listener_lifetime() {
         let listener = SctpListener::bind_with_config("127.0.0.1:0", config()).unwrap();
@@ -46,7 +56,7 @@ mod udp_transport {
     fn udp_failed_many_selection_can_retry_on_the_same_socket() {
         let reservation = crate::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let peer = reservation.local_addr().unwrap();
-        let socket = SctpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = SctpSocket::bind_with_config("127.0.0.1:0", connect_fallback()).unwrap();
         socket
             .set_init_options(crate::net::SctpInitOptions {
                 max_attempts: 1,
@@ -109,10 +119,16 @@ mod udp_transport {
 
     #[test]
     fn udp_default_policy_and_fallback_error_boundary() {
+        use super::super::should_fallback;
         assert_eq!(SctpTransportConfig::default().policy, SctpTransportPolicy::NativePreferred);
         assert_eq!(SctpTransportPolicy::default(), SctpTransportPolicy::NativePreferred);
+        let err = |k| crate::io::Error::from(k);
+        // The default policy only leaves native SCTP when the OS lacks it.
+        assert!(should_fallback(
+            &err(ErrorKind::Unsupported),
+            SctpTransportPolicy::NativePreferred
+        ));
         for kind in [
-            ErrorKind::Unsupported,
             ErrorKind::ConnectionRefused,
             ErrorKind::ConnectionReset,
             ErrorKind::ConnectionAborted,
@@ -120,7 +136,16 @@ mod udp_transport {
             ErrorKind::NetworkUnreachable,
             ErrorKind::TimedOut,
         ] {
-            assert!(super::super::should_fallback(&crate::io::Error::from(kind)), "{kind:?}");
+            // Not a downgrade trigger by default...
+            assert!(!should_fallback(&err(kind), SctpTransportPolicy::NativePreferred), "{kind:?}");
+            // ...but it is under the explicit opt-in policy.
+            assert!(
+                should_fallback(
+                    &err(kind),
+                    SctpTransportPolicy::NativePreferredWithConnectFallback
+                ),
+                "{kind:?}"
+            );
         }
         for kind in [
             ErrorKind::InvalidInput,
@@ -131,14 +156,21 @@ mod udp_transport {
             ErrorKind::WouldBlock,
             ErrorKind::Other,
         ] {
-            assert!(!super::super::should_fallback(&crate::io::Error::from(kind)), "{kind:?}");
+            for policy in [
+                SctpTransportPolicy::NativePreferred,
+                SctpTransportPolicy::NativePreferredWithConnectFallback,
+            ] {
+                assert!(!should_fallback(&err(kind), policy), "{kind:?} {policy:?}");
+            }
         }
     }
 
     #[test]
     fn udp_plain_client_falls_back_and_clone_io_is_independent() {
         let listener = SctpListener::bind_with_config("127.0.0.1:0", config()).unwrap();
-        let client = SctpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let client =
+            SctpStream::connect_with_config(listener.local_addr().unwrap(), connect_fallback())
+                .unwrap();
         let server = accept(&listener);
         client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         server.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -282,11 +314,7 @@ mod udp_transport {
         });
         // The server has no native listener: native connection refusal must
         // complete before any application data is submitted to the UDP engine.
-        let socket = SctpSocket::bind_with_config(
-            "127.0.0.1:0",
-            SctpTransportConfig { policy: SctpTransportPolicy::NativePreferred, udp: None },
-        )
-        .unwrap();
+        let socket = SctpSocket::bind_with_config("127.0.0.1:0", connect_fallback()).unwrap();
         socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         socket

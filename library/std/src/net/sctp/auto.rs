@@ -74,6 +74,7 @@ use crate::sync::{Arc, Condvar, Mutex};
 use crate::thread;
 
 struct BoundState {
+    policy: SctpTransportPolicy,
     native: Option<net_imp::SctpStream>,
     udp: Option<udp::UdpSctpSocket>,
     prefetched: crate::collections::VecDeque<many::Queued>,
@@ -127,6 +128,7 @@ impl Bound {
             return Ok(Self {
                 state: Arc::new((
                     Mutex::new(BoundState {
+                        policy: config.policy,
                         native,
                         udp: Some(udp),
                         prefetched: Default::default(),
@@ -142,6 +144,14 @@ impl Bound {
             });
         }
         Err(error)
+    }
+
+    pub(super) fn transport(&self) -> SctpTransport {
+        let s = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        match &s.selected {
+            Some(selected) => selected.transport(),
+            None => SctpTransport::Native,
+        }
     }
 
     pub(super) fn call<T>(
@@ -177,6 +187,7 @@ impl Bound {
             ));
         }
         if !state.connecting {
+            let policy = state.policy;
             let native = state.native.take();
             let udp = state.udp.as_ref().unwrap().clone();
             let targets = addrs.to_vec();
@@ -192,7 +203,7 @@ impl Bound {
                         };
                         match result {
                             Ok(()) => return Ok(SctpStreamBackend::Native(native)),
-                            Err(e) if should_fallback(&e) => {}
+                            Err(e) if should_fallback(&e, policy) => {}
                             Err(e) => return Err(e),
                         }
                     }
@@ -473,6 +484,8 @@ impl Bound {
         Self {
             state: Arc::new((
                 Mutex::new(BoundState {
+                    // Already selected; no further fallback decision is made.
+                    policy: SctpTransportPolicy::NativePreferred,
                     native: None,
                     udp: None,
                     selected: Some(Arc::new(selected)),
