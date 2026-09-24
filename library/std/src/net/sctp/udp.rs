@@ -1093,8 +1093,12 @@ impl State {
             let Some(tx) = self.endpoint.poll_transmit() else {
                 break;
             };
-            let index =
-                self.local.iter().position(|a| a.is_ipv4() == tx.remote.is_ipv4()).unwrap_or(0);
+            // Endpoint-level datagrams (handshake replies, aborts) have no session;
+            // without a local socket of the peer's family they cannot be carried.
+            let Some(index) = self.local.iter().position(|a| a.is_ipv4() == tx.remote.is_ipv4())
+            else {
+                continue;
+            };
             if let Payload::RawEncode(datagrams) = tx.payload {
                 for bytes in datagrams {
                     self.transmits.push_back((index, tx.remote, bytes));
