@@ -48,14 +48,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bytes::Bytes;
 use core::fmt;
-#[cfg(not(feature = "rustc-dep-of-std"))]
-use core::hash::BuildHasherDefault;
 use core::net::{IpAddr, SocketAddr};
 use core::str::FromStr;
 use core::time::Duration;
-use log::{debug, error, trace, warn};
-#[cfg(not(feature = "rustc-dep-of-std"))]
-use rustc_hash::FxHasher;
 #[cfg(not(feature = "rustc-dep-of-std"))]
 use std::collections::HashMap;
 
@@ -68,10 +63,7 @@ mod timer;
 #[cfg(test)]
 mod association_test;
 
-#[cfg(feature = "rustc-dep-of-std")]
 type FxHashMap<K, V> = HashMap<K, V>;
-#[cfg(not(feature = "rustc-dep-of-std"))]
-type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// Reasons why an association might be lost
 #[non_exhaustive]

@@ -86,21 +86,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crc"
-version = "3.4.0"
-dependencies = [
- "crc-catalog",
- "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "crc-catalog"
-version = "2.4.0"
-dependencies = [
- "rustc-std-workspace-core",
-]
-
-[[package]]
 name = "dlmalloc"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -179,13 +164,6 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-dependencies = [
- "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "log"
-version = "0.4.29"
 dependencies = [
  "rustc-std-workspace-core",
 ]
@@ -319,13 +297,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustc-hash"
-version = "2.1.2"
-dependencies = [
- "rustc-std-workspace-core",
-]
-
-[[package]]
 name = "rustc-literal-escaper"
 version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,12 +332,8 @@ name = "sctp-proto"
 version = "0.9.0"
 dependencies = [
  "bytes",
- "crc",
- "log",
- "rustc-hash",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
- "slab",
 ]
 
 [[package]]
@@ -374,14 +341,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "slab"
-version = "0.4.12"
-dependencies = [
- "rustc-std-workspace-alloc",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "std"

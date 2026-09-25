@@ -5,7 +5,6 @@ use bytes::Bytes;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
-use crc::{CRC_32_ISCSI, Crc, Table};
 
 static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -128,15 +127,74 @@ pub(crate) fn get_padding_size(len: usize) -> usize {
 /// Allocate and zero this data once.
 /// We need to use it for the checksum and don't want to allocate/clear each time.
 pub(crate) static FOUR_ZEROES: Bytes = Bytes::from_static(&[0, 0, 0, 0]);
-pub(crate) const ISCSI_CRC: Crc<u32, Table<16>> = Crc::<u32, Table<16>>::new(&CRC_32_ISCSI);
+/// CRC-32C (Castagnoli, the iSCSI/SCTP polynomial) with a compile-time table.
+///
+/// Parameters as in the CRC catalogue's `CRC-32/ISCSI`: reflected polynomial
+/// `0x82F63B78`, initial value and final XOR `0xFFFF_FFFF`, check value
+/// `0xE306_9283` for `"123456789"`.
+pub(crate) struct Crc32c(u32);
+
+const CRC32C_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+            k += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
+impl Crc32c {
+    pub(crate) const fn new() -> Self {
+        Self(0xFFFF_FFFF)
+    }
+
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = CRC32C_TABLE[((self.0 ^ b as u32) & 0xFF) as usize] ^ (self.0 >> 8);
+        }
+    }
+
+    pub(crate) const fn finalize(self) -> u32 {
+        self.0 ^ 0xFFFF_FFFF
+    }
+}
 
 /// Fastest way to do a crc32 without allocating.
 pub(crate) fn generate_packet_checksum(raw: &Bytes) -> u32 {
-    let mut digest = ISCSI_CRC.digest();
+    let mut digest = Crc32c::new();
     digest.update(&raw[0..8]);
     digest.update(&FOUR_ZEROES[..]);
     digest.update(&raw[12..]);
     digest.finalize()
+}
+
+#[cfg(test)]
+mod crc32c_tests {
+    use super::Crc32c;
+
+    #[test]
+    fn matches_the_catalogue_check_value() {
+        let mut c = Crc32c::new();
+        c.update(b"123456789");
+        assert_eq!(c.finalize(), 0xE306_9283);
+    }
+
+    #[test]
+    fn is_streamable() {
+        let mut whole = Crc32c::new();
+        whole.update(b"stream control transmission protocol");
+        let mut parts = Crc32c::new();
+        parts.update(b"stream control ");
+        parts.update(b"transmission protocol");
+        assert_eq!(whole.finalize(), parts.finalize());
+    }
 }
 
 /// A [`BytesSource`] implementation for `&'a mut [Bytes]`
