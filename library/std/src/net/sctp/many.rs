@@ -1,6 +1,6 @@
 //! Native/UDP association selection for one-to-many sockets.
 use super::*;
-use crate::collections::{HashMap, VecDeque};
+use crate::collections::{HashMap, HashSet, VecDeque};
 use crate::sync::{Arc, Condvar, Mutex};
 use crate::thread;
 use crate::time::Instant;
@@ -549,7 +549,12 @@ impl State {
             }
         }
         if let Some(native) = &native {
+            // One getsockopt per tick for the id list; status only for ids we
+            // have not registered yet, not for every association every 10 ms.
             for id in native.assoc_ids()? {
+                if self.reverse.contains_key(&Route::Native(id)) {
+                    continue;
+                }
                 if let Ok(status) = native.assoc_status(id) {
                     if status.state == net_imp::SCTP_STATE_ESTABLISHED {
                         self.register(Route::Native(id), status.primary_addr)?;
@@ -601,20 +606,24 @@ impl State {
             }
         }
         // Inbound UDP associations need IDs even before their first data message.
-        for id in udp.assoc_ids()? {
+        let udp_ids = udp.assoc_ids()?;
+        for &id in &udp_ids {
+            if self.reverse.contains_key(&Route::Udp(id)) {
+                continue;
+            }
             if let Ok(s) = udp.assoc_status(id) {
                 self.register(Route::Udp(id), s.primary_addr)?;
             }
         }
-        let mut live = udp.assoc_ids()?.into_iter().map(Route::Udp).collect::<Vec<_>>();
+        let mut live: HashSet<Route> = udp_ids.into_iter().map(Route::Udp).collect();
         if let Some(n) = &native {
             live.extend(n.assoc_ids()?.into_iter().map(Route::Native));
         }
         // A new send to a disconnected peer must select a new association.
         // Retain old IDs only while their final queued evidence is unread.
         self.peers.retain(|_, id| self.routes.get(id).is_some_and(|r| live.contains(r)));
-        let queued_ids =
-            self.queue.iter().filter_map(|q| received_id(&q.received.receive)).collect::<Vec<_>>();
+        let queued_ids: HashSet<i32> =
+            self.queue.iter().filter_map(|q| received_id(&q.received.receive)).collect();
         self.routes.retain(|id, route| live.contains(route) || queued_ids.contains(id));
         self.reverse.retain(|_, id| self.routes.contains_key(id));
         Ok(())
