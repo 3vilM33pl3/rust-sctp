@@ -518,31 +518,42 @@ fn get_sockopt_bytes(
     Ok(len as usize)
 }
 
-fn bind_addrs_sctp(sock: &Socket, addrs: &[SocketAddr]) -> io::Result<()> {
-    if addrs.is_empty() {
-        return Ok(());
+// SCTP_BINDX_ADD_ADDR / SCTP_BINDX_REM_ADDR take a single `struct sockaddr` per
+// setsockopt call: the kernel casts optval to one sockaddr and ignores trailing
+// bytes, so a packed array would bind only its first address. Apply them one at a
+// time, as libc's `sctp_bindx` does. (Verified against FreeBSD 15.0.)
+fn bindx_each(sock: &Socket, addrs: &[SocketAddr], option_name: c_int) -> io::Result<()> {
+    for addr in addrs {
+        let packed = marshal_raw_sockaddrs_sctp(&[*addr]);
+        set_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, option_name, &packed)?;
     }
-    let packed = marshal_raw_sockaddrs_sctp(addrs);
-    set_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, SCTP_BINDX_ADD, &packed)
+    Ok(())
+}
+
+fn bind_addrs_sctp(sock: &Socket, addrs: &[SocketAddr]) -> io::Result<()> {
+    bindx_each(sock, addrs, SCTP_BINDX_ADD)
 }
 
 fn unbind_addrs_sctp(sock: &Socket, addrs: &[SocketAddr]) -> io::Result<()> {
-    if addrs.is_empty() {
-        return Ok(());
-    }
-    let packed = marshal_raw_sockaddrs_sctp(addrs);
-    set_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, SCTP_BINDX_REMOVE, &packed)
+    bindx_each(sock, addrs, SCTP_BINDX_REMOVE)
 }
 
 fn connect_addrs_sctp(sock: &Socket, addrs: &[SocketAddr]) -> io::Result<i32> {
     if addrs.is_empty() {
         return Err(io::const_error!(ErrorKind::InvalidInput, "empty SCTP address set"));
     }
+    // SCTP_CONNECT_X (a.k.a. SCTP_SOCKOPT_CONNECTX) expects
+    //   [ i32 address count ][ packed sockaddrs... ]
+    // and writes the new association id back into the leading 4 bytes
+    // (`sctp_assoc_t`). The previous layout put the addresses first and read a
+    // trailing word, which the kernel rejects with EINVAL. (Verified against
+    // FreeBSD 15.0.)
     let packed = marshal_raw_sockaddrs_sctp(addrs);
-    let mut buffer = vec![0u8; packed.len() + mem::size_of::<i32>()];
-    buffer[..packed.len()].copy_from_slice(&packed);
+    let mut buffer = vec![0u8; mem::size_of::<i32>() + packed.len()];
+    buffer[..mem::size_of::<i32>()].copy_from_slice(&(addrs.len() as i32).to_ne_bytes());
+    buffer[mem::size_of::<i32>()..].copy_from_slice(&packed);
     set_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_CONNECTX, &buffer)?;
-    Ok(i32::from_ne_bytes(buffer[packed.len()..packed.len() + 4].try_into().unwrap()))
+    Ok(i32::from_ne_bytes(buffer[..mem::size_of::<i32>()].try_into().unwrap()))
 }
 
 fn assoc_ids_sctp(sock: &Socket) -> io::Result<Vec<i32>> {
