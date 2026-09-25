@@ -14,7 +14,7 @@ use crate::io::prelude::*;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
 use crate::iter::FusedIterator;
 use crate::net::{SocketAddr, ToSocketAddrs};
-use crate::sys::{AsInner, FromInner, IntoInner, net as net_imp};
+use crate::sys::net as net_imp;
 use crate::time::Duration;
 
 /// SCTP association setup options.
@@ -2232,116 +2232,6 @@ impl<'a> Iterator for SctpIncoming<'a> {
 
 #[unstable(feature = "sctp", issue = "none")]
 impl FusedIterator for SctpIncoming<'_> {}
-
-impl AsInner<net_imp::SctpStream> for SctpStream {
-    fn as_inner(&self) -> &net_imp::SctpStream {
-        match &self.0 {
-            SctpStreamBackend::Native(inner) => inner,
-            #[cfg(sctp_udp_backend)]
-            SctpStreamBackend::Pending(_) => {
-                panic!("selected SCTP stream has no borrowed native socket")
-            }
-            #[cfg(sctp_udp_backend)]
-            SctpStreamBackend::Udp(_) => {
-                panic!("UDP-encapsulated SCTP stream has no native inner socket")
-            }
-        }
-    }
-}
-
-impl FromInner<net_imp::SctpStream> for SctpStream {
-    fn from_inner(inner: net_imp::SctpStream) -> Self {
-        Self(SctpStreamBackend::Native(inner))
-    }
-}
-
-impl IntoInner<net_imp::SctpStream> for SctpStream {
-    fn into_inner(self) -> net_imp::SctpStream {
-        match self.0 {
-            SctpStreamBackend::Native(inner) => inner,
-            #[cfg(sctp_udp_backend)]
-            SctpStreamBackend::Pending(_) => {
-                panic!("selected SCTP stream has no borrowed native socket")
-            }
-            #[cfg(sctp_udp_backend)]
-            SctpStreamBackend::Udp(_) => {
-                panic!("UDP-encapsulated SCTP stream has no native inner socket")
-            }
-        }
-    }
-}
-
-impl AsInner<net_imp::SctpListener> for SctpListener {
-    fn as_inner(&self) -> &net_imp::SctpListener {
-        match &self.0 {
-            SctpListenerBackend::Native(inner) => inner,
-            #[cfg(sctp_udp_backend)]
-            SctpListenerBackend::Hybrid(_) => {
-                panic!("hybrid SCTP listener has no single native socket")
-            }
-            #[cfg(sctp_udp_backend)]
-            SctpListenerBackend::Udp(_) => {
-                panic!("UDP-encapsulated SCTP listener has no native inner socket")
-            }
-        }
-    }
-}
-
-impl FromInner<net_imp::SctpListener> for SctpListener {
-    fn from_inner(inner: net_imp::SctpListener) -> Self {
-        Self(SctpListenerBackend::Native(inner))
-    }
-}
-
-impl IntoInner<net_imp::SctpListener> for SctpListener {
-    fn into_inner(self) -> net_imp::SctpListener {
-        match self.0 {
-            SctpListenerBackend::Native(inner) => inner,
-            #[cfg(sctp_udp_backend)]
-            SctpListenerBackend::Hybrid(_) => {
-                panic!("hybrid SCTP listener has no single native socket")
-            }
-            #[cfg(sctp_udp_backend)]
-            SctpListenerBackend::Udp(_) => {
-                panic!("UDP-encapsulated SCTP listener has no native inner socket")
-            }
-        }
-    }
-}
-
-impl AsInner<net_imp::SctpSocket> for SctpSocket {
-    fn as_inner(&self) -> &net_imp::SctpSocket {
-        match &self.0 {
-            SctpSocketBackend::Native(inner) => inner,
-            #[cfg(sctp_udp_backend)]
-            SctpSocketBackend::Hybrid(_) => panic!("hybrid SCTP socket has no native inner socket"),
-            #[cfg(sctp_udp_backend)]
-            SctpSocketBackend::Udp(_) => {
-                panic!("UDP-encapsulated SCTP socket has no native inner socket")
-            }
-        }
-    }
-}
-
-impl FromInner<net_imp::SctpSocket> for SctpSocket {
-    fn from_inner(inner: net_imp::SctpSocket) -> Self {
-        Self(SctpSocketBackend::Native(inner))
-    }
-}
-
-impl IntoInner<net_imp::SctpSocket> for SctpSocket {
-    fn into_inner(self) -> net_imp::SctpSocket {
-        match self.0 {
-            SctpSocketBackend::Native(inner) => inner,
-            #[cfg(sctp_udp_backend)]
-            SctpSocketBackend::Hybrid(_) => panic!("hybrid SCTP socket has no native inner socket"),
-            #[cfg(sctp_udp_backend)]
-            SctpSocketBackend::Udp(_) => {
-                panic!("UDP-encapsulated SCTP socket has no native inner socket")
-            }
-        }
-    }
-}
 
 #[unstable(feature = "sctp", issue = "none")]
 impl fmt::Debug for SctpStream {
