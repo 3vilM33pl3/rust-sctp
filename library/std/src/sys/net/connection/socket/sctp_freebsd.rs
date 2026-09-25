@@ -27,14 +27,6 @@ pub const SCTP_COMM_UP: u16 = 1;
 pub const SCTP_COMM_LOST: u16 = 2;
 pub const SCTP_CANT_STR_ASSOC: u16 = 5;
 
-/// Whether an error from a native SCTP socket call means the kernel has no
-/// SCTP support at all (as opposed to a per-connection failure).
-pub fn sctp_error_means_unsupported(err: &io::Error) -> bool {
-    matches!(
-        err.raw_os_error(),
-        Some(c::EPROTONOSUPPORT | c::EAFNOSUPPORT | c::ESOCKTNOSUPPORT | c::ENOPROTOOPT)
-    )
-}
 const SCTP_SOCKOPT_RTOINFO: c_int = 0x00000001;
 const SCTP_SOCKOPT_INITMSG: c_int = 0x00000003;
 const SCTP_SOCKOPT_NODELAY: c_int = 0x00000004;
@@ -266,40 +258,6 @@ fn sctp_socket(family: c_int, ty: c_int) -> io::Result<Socket> {
     Ok(unsafe { Socket::from_raw_fd(fd) })
 }
 
-fn normalize_bound_addrs(addrs: &[SocketAddr], actual_port: u16) -> Vec<SocketAddr> {
-    addrs
-        .iter()
-        .copied()
-        .map(|mut a| {
-            if a.port() == 0 {
-                a.set_port(actual_port);
-            }
-            a
-        })
-        .collect()
-}
-
-fn read_u16_ne(payload: &[u8], offset: usize) -> Option<u16> {
-    let bytes = payload.get(offset..offset + 2)?;
-    Some(u16::from_ne_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_u32_ne(payload: &[u8], offset: usize) -> Option<u32> {
-    let bytes = payload.get(offset..offset + 4)?;
-    Some(u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn read_i32_ne(payload: &[u8], offset: usize) -> Option<i32> {
-    let bytes = payload.get(offset..offset + 4)?;
-    Some(i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn notification_payload_len(payload: &[u8]) -> usize {
-    read_u32_ne(payload, 4)
-        .map(|len| cmp::min(len as usize, payload.len()))
-        .unwrap_or(payload.len())
-}
-
 fn read_send_info_freebsd(payload: &[u8], offset: usize) -> Option<crate::net::SctpSendInfo> {
     let bytes = payload.get(offset..offset + mem::size_of::<SctpSndInfoFreeBSD>())?;
     // SAFETY: the preceding length check guarantees `size_of::<T>()` readable bytes, and `T` is
@@ -312,15 +270,6 @@ fn read_send_info_freebsd(payload: &[u8], offset: usize) -> Option<crate::net::S
         context: raw.context,
         assoc_id: raw.assoc_id,
     })
-}
-
-fn read_u16_list(payload: &[u8], offset: usize) -> Vec<u16> {
-    payload
-        .get(offset..notification_payload_len(payload))
-        .unwrap_or_default()
-        .chunks_exact(2)
-        .map(|bytes| u16::from_ne_bytes([bytes[0], bytes[1]]))
-        .collect()
 }
 
 fn sockaddr_span(data: &[u8]) -> io::Result<(usize, c_int, usize)> {
