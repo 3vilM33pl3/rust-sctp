@@ -49,7 +49,6 @@ const SCTP_SOCKOPT_AUTH_KEY: c_int = 0x00000013;
 const SCTP_SOCKOPT_AUTH_ACTIVE_KEY: c_int = 0x00000015;
 const SCTP_SOCKOPT_AUTH_DELETE_KEY: c_int = 0x00000016;
 const SCTP_SOCKOPT_MAX_BURST: c_int = 0x00000019;
-const SCTP_SOCKOPT_EVENTS_COMPAT: c_int = 0x0000000c;
 const SCTP_SOCKOPT_EVENT: c_int = 0x0000001e;
 const SCTP_SOCKOPT_RECVRCVINFO: c_int = 0x0000001f;
 const SCTP_SOCKOPT_RECVNXTINFO: c_int = 0x00000020;
@@ -156,21 +155,6 @@ struct SctpEventFreeBSD {
     event_type: u16,
     on: u8,
     _pad: u8,
-}
-
-#[repr(C)]
-struct SctpEventSubscribeFreeBSD {
-    data_io: u8,
-    association: u8,
-    address: u8,
-    send_failure: u8,
-    peer_error: u8,
-    shutdown: u8,
-    partial_delivery: u8,
-    adaptation: u8,
-    authentication: u8,
-    sender_dry: u8,
-    stream_reset: u8,
 }
 
 #[repr(C)]
@@ -632,7 +616,7 @@ fn assoc_status_sctp(sock: &Socket, assoc_id: i32) -> io::Result<crate::net::Sct
         inbound_streams: raw.inbound_streams,
         outbound_streams: raw.outbound_streams,
         fragmentation_point: raw.fragmentation_point,
-        primary_addr: parse_sockaddr_storage(&raw.primary.addr).unwrap_or(None),
+        primary_addr: parse_sockaddr_storage(&raw.primary.addr)?,
         primary_state: raw.primary.state,
         primary_cwnd: raw.primary.cwnd,
         primary_srtt: raw.primary.srtt,
@@ -642,25 +626,9 @@ fn assoc_status_sctp(sock: &Socket, assoc_id: i32) -> io::Result<crate::net::Sct
 }
 
 fn subscribe_events_sctp(sock: &Socket, mask: crate::net::SctpEventMask) -> io::Result<()> {
-    let compat = SctpEventSubscribeFreeBSD {
-        data_io: mask.data_io as u8,
-        association: mask.association as u8,
-        address: mask.address as u8,
-        send_failure: mask.send_failure as u8,
-        peer_error: mask.peer_error as u8,
-        shutdown: mask.shutdown as u8,
-        partial_delivery: mask.partial_delivery as u8,
-        adaptation: mask.adaptation as u8,
-        authentication: mask.authentication as u8,
-        sender_dry: mask.sender_dry as u8,
-        stream_reset: mask.stream_reset as u8,
-    };
-    set_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENTS_COMPAT, unsafe {
-        crate::slice::from_raw_parts(
-            (&compat as *const SctpEventSubscribeFreeBSD).cast::<u8>(),
-            mem::size_of::<SctpEventSubscribeFreeBSD>(),
-        )
-    })?;
+    // Per-event SCTP_EVENT subscriptions only. The legacy SCTP_EVENTS struct
+    // also enabled the legacy SCTP_SEND_FAILED notification, whose layout the
+    // parser does not handle, so it is deliberately not applied.
     if mask.data_io {
         unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
     }
@@ -677,9 +645,30 @@ fn subscribe_events_sctp(sock: &Socket, mask: crate::net::SctpEventMask) -> io::
         (SCTP_EVENT_SENDER_DRY, mask.sender_dry),
         (SCTP_EVENT_STREAM_RESET, mask.stream_reset),
     ];
+    // Remember each event's previous state so a failure part-way through can
+    // be undone instead of leaving the socket half-subscribed.
+    let mut applied: Vec<(u16, u8)> = Vec::with_capacity(events.len());
     for (event_type, on) in events {
+        let mut prev = SctpEventFreeBSD { assoc_id: 0, event_type, on: 0, _pad: 0 };
+        let prev_bytes = unsafe {
+            crate::slice::from_raw_parts_mut(
+                (&mut prev as *mut SctpEventFreeBSD).cast::<u8>(),
+                mem::size_of::<SctpEventFreeBSD>(),
+            )
+        };
+        let had_prev =
+            get_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, prev_bytes).is_ok();
         let evt = SctpEventFreeBSD { assoc_id: 0, event_type, on: on as u8, _pad: 0 };
-        unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, evt) }?;
+        if let Err(e) = unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, evt) } {
+            for (t, was_on) in applied {
+                let undo = SctpEventFreeBSD { assoc_id: 0, event_type: t, on: was_on, _pad: 0 };
+                let _ = unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, undo) };
+            }
+            return Err(e);
+        }
+        if had_prev {
+            applied.push((event_type, prev.on));
+        }
     }
     Ok(())
 }
