@@ -198,8 +198,14 @@ mod udp_transport {
         let probe = crate::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let encap = probe.local_addr().unwrap().port();
         drop(probe);
+        // Any free port works as the SCTP port; it only has to differ from `encap`
+        // so the encapsulation-port override is actually exercised.
+        let sctp_port = {
+            let p = crate::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            p.local_addr().unwrap().port()
+        };
         let listener = SctpListener::bind_with_config(
-            "127.0.0.1:19001",
+            SocketAddr::from(([127, 0, 0, 1], sctp_port)),
             SctpTransportConfig {
                 policy: SctpTransportPolicy::UdpOnly,
                 udp: Some(SctpUdpConfig { local_encap_port: Some(encap), ..Default::default() }),
