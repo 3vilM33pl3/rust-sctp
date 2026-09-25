@@ -38,6 +38,10 @@ cfg_select! {
 
 use netc as c;
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod sctp_common;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub use sctp_common::*;
 #[cfg(target_os = "freebsd")]
 mod sctp_freebsd;
 #[cfg(target_os = "freebsd")]
@@ -403,15 +407,6 @@ pub const SCTP_COMM_LOST: u16 = 1;
 #[cfg(target_os = "linux")]
 pub const SCTP_CANT_STR_ASSOC: u16 = 4;
 
-/// Whether an error from a native SCTP socket call means the kernel has no
-/// SCTP support at all (as opposed to a per-connection failure).
-#[cfg(target_os = "linux")]
-pub fn sctp_error_means_unsupported(err: &io::Error) -> bool {
-    matches!(
-        err.raw_os_error(),
-        Some(c::EPROTONOSUPPORT | c::EAFNOSUPPORT | c::ESOCKTNOSUPPORT | c::ENOPROTOOPT)
-    )
-}
 #[cfg(target_os = "linux")]
 const SCTP_SOCKOPT_INITMSG: c_int = 2;
 #[cfg(target_os = "linux")]
@@ -718,20 +713,6 @@ fn pack_sockaddrs(addrs: &[SocketAddr]) -> Vec<u8> {
 }
 
 #[cfg(target_os = "linux")]
-fn normalize_bound_addrs(addrs: &[SocketAddr], actual_port: u16) -> Vec<SocketAddr> {
-    addrs
-        .iter()
-        .copied()
-        .map(|mut a| {
-            if a.port() == 0 {
-                a.set_port(actual_port);
-            }
-            a
-        })
-        .collect()
-}
-
-#[cfg(target_os = "linux")]
 fn enable_recv_info(sock: &Socket) -> io::Result<()> {
     // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
     // value, and the fd is live for `&self`.
@@ -812,31 +793,6 @@ fn parse_linux_sockaddrs(mut bytes: &[u8], count: usize) -> io::Result<Vec<Socke
 }
 
 #[cfg(target_os = "linux")]
-fn read_u16_ne(payload: &[u8], offset: usize) -> Option<u16> {
-    let bytes = payload.get(offset..offset + 2)?;
-    Some(u16::from_ne_bytes([bytes[0], bytes[1]]))
-}
-
-#[cfg(target_os = "linux")]
-fn read_u32_ne(payload: &[u8], offset: usize) -> Option<u32> {
-    let bytes = payload.get(offset..offset + 4)?;
-    Some(u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-#[cfg(target_os = "linux")]
-fn read_i32_ne(payload: &[u8], offset: usize) -> Option<i32> {
-    let bytes = payload.get(offset..offset + 4)?;
-    Some(i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-#[cfg(target_os = "linux")]
-fn notification_payload_len(payload: &[u8]) -> usize {
-    read_u32_ne(payload, 4)
-        .map(|len| cmp::min(len as usize, payload.len()))
-        .unwrap_or(payload.len())
-}
-
-#[cfg(target_os = "linux")]
 fn read_send_info_linux(payload: &[u8], offset: usize) -> Option<crate::net::SctpSendInfo> {
     let bytes = payload.get(offset..offset + mem::size_of::<SctpSndInfoLinux>())?;
     // SAFETY: the preceding length check guarantees `size_of::<T>()` readable bytes, and `T` is
@@ -849,16 +805,6 @@ fn read_send_info_linux(payload: &[u8], offset: usize) -> Option<crate::net::Sct
         context: raw.context,
         assoc_id: raw.assoc_id,
     })
-}
-
-#[cfg(target_os = "linux")]
-fn read_u16_list(payload: &[u8], offset: usize) -> Vec<u16> {
-    payload
-        .get(offset..notification_payload_len(payload))
-        .unwrap_or_default()
-        .chunks_exact(2)
-        .map(|bytes| u16::from_ne_bytes([bytes[0], bytes[1]]))
-        .collect()
 }
 
 #[cfg(target_os = "linux")]
