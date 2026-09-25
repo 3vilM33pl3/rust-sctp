@@ -343,7 +343,7 @@ impl UdpSctpSocket {
         let mut port = config.local_encap_port.unwrap_or(addrs[0].port());
         for addr in addrs {
             let udp_addr = SocketAddr::new(addr.ip(), port);
-            let socket = net_imp::UdpSocket::bind_sctp_encapsulation(udp_addr, config.reuse_port)?;
+            let socket = net_imp::UdpSocket::bind_with_reuse_port(udp_addr, config.reuse_port)?;
             let socket = UdpSocket::from_inner(socket);
             socket.set_nonblocking(true)?;
             port = socket.local_addr()?.port();
