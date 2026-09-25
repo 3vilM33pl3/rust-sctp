@@ -304,7 +304,7 @@ impl Packet {
             }
         }
 
-        let mut digest = ISCSI_CRC.digest();
+        let mut digest = Crc32c::new();
         digest.update(writer);
         let checksum = digest.finalize();
 

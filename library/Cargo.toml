@@ -95,8 +95,3 @@ windows-sys = { path = 'windows-sys' }
 # Vendored, std-compatible copies of the SCTP-over-UDP engine's dependencies;
 # see `library/vendor-std/README.md`.
 bytes = { path = 'vendor-std/bytes' }
-crc = { path = 'vendor-std/crc' }
-crc-catalog = { path = 'vendor-std/crc-catalog' }
-log = { path = 'vendor-std/log' }
-rustc-hash = { path = 'vendor-std/rustc-hash' }
-slab = { path = 'vendor-std/slab' }

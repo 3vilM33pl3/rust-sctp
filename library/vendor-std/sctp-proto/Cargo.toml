@@ -42,10 +42,6 @@ rustc-dep-of-std = [
     "dep:alloc",
     "dep:core",
     "bytes/rustc-dep-of-std",
-    "crc/rustc-dep-of-std",
-    "log/rustc-dep-of-std",
-    "rustc-hash/rustc-dep-of-std",
-    "slab/rustc-dep-of-std",
 ]
 
 # Standalone: tested with plain `cargo test`, consumed by std as a path dependency.
@@ -69,28 +65,7 @@ version = "1.0"
 optional = true
 package = "rustc-std-workspace-core"
 
-[dependencies.crc]
-version = "3.4.0"
-default-features = false
-
-[dependencies.log]
-version = "0.4.21"
-default-features = false
-
-[dependencies.rustc-hash]
-version = "2.1.1"
-default-features = false
-
-[dependencies.slab]
-version = "0.4.9"
-default-features = false
-
 
 # Standalone builds must see the same std-compatible copies std uses.
 [patch.crates-io]
 bytes = { path = "../bytes" }
-crc = { path = "../crc" }
-crc-catalog = { path = "../crc-catalog" }
-log = { path = "../log" }
-rustc-hash = { path = "../rustc-hash" }
-slab = { path = "../slab" }

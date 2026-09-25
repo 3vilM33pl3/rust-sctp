@@ -10,7 +10,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bytes::Bytes;
 use core::fmt;
-use log::{debug, error, trace};
 
 /// Identifier for a stream within a particular association
 pub type StreamId = u16;

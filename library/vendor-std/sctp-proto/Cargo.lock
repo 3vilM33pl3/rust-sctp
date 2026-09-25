@@ -11,35 +11,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crc"
-version = "3.4.0"
-dependencies = [
- "crc-catalog",
- "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "crc-catalog"
-version = "2.4.0"
-dependencies = [
- "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "log"
-version = "0.4.29"
-dependencies = [
- "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "rustc-hash"
-version = "2.1.2"
-dependencies = [
- "rustc-std-workspace-core",
-]
-
-[[package]]
 name = "rustc-std-workspace-alloc"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -56,18 +27,6 @@ name = "sctp-proto"
 version = "0.9.0"
 dependencies = [
  "bytes",
- "crc",
- "log",
- "rustc-hash",
- "rustc-std-workspace-alloc",
- "rustc-std-workspace-core",
- "slab",
-]
-
-[[package]]
-name = "slab"
-version = "0.4.12"
-dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
 ]

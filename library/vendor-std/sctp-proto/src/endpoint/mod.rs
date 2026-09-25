@@ -10,8 +10,6 @@ use alloc::sync::Arc;
 #[cfg(feature = "rustc-dep-of-std")]
 use core::error;
 use core::fmt;
-#[cfg(not(feature = "rustc-dep-of-std"))]
-use core::hash::BuildHasherDefault;
 use core::iter;
 use core::net::{IpAddr, SocketAddr};
 use core::ops::{Index, IndexMut};
@@ -33,15 +31,9 @@ use crate::{EcnCodepoint, Payload, Transmit};
 use crate::{association::Association, chunk::Chunk};
 
 use bytes::Bytes;
-use log::{debug, trace, warn};
-#[cfg(not(feature = "rustc-dep-of-std"))]
-use rustc_hash::FxHasher;
-use slab::Slab;
+use crate::slab::Slab;
 
-#[cfg(feature = "rustc-dep-of-std")]
 type FxHashMap<K, V> = HashMap<K, V>;
-#[cfg(not(feature = "rustc-dep-of-std"))]
-type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// The main entry point to the library
 ///

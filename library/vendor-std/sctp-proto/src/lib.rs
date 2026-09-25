@@ -52,6 +52,19 @@
 #[macro_use]
 extern crate alloc;
 
+// Logging is compiled out: the engine lives inside the standard library, which
+// has no logger. `format_args!` keeps the arguments type-checked and "used".
+#[allow(unused_macros)]
+macro_rules! trace { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+#[allow(unused_macros)]
+macro_rules! debug { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+#[allow(unused_macros)]
+macro_rules! info { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+#[allow(unused_macros)]
+macro_rules! warn { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+#[allow(unused_macros)]
+macro_rules! error { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+
 #[cfg(not(feature = "rustc-dep-of-std"))]
 extern crate std;
 
@@ -92,6 +105,7 @@ pub use crate::error::Error;
 mod packet;
 
 mod shared;
+mod slab;
 pub use crate::shared::{AssociationEvent, AssociationId, EcnCodepoint, EndpointEvent};
 
 pub(crate) mod param;
