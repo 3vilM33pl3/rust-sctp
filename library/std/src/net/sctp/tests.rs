@@ -555,11 +555,42 @@ fn unsupported_platform_returns_unsupported_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
 }
 
+// The tests below exercise the *native* Linux backend. They use `NativeOnly`
+// so the hybrid default cannot quietly route them over the UDP engine, and
+// they skip (rather than fail) on a kernel without SCTP support.
 #[cfg(target_os = "linux")]
-fn localhost_listener() -> (SctpListener, SocketAddr) {
-    let listener = SctpListener::bind("127.0.0.1:0").unwrap();
+fn native_only() -> SctpTransportConfig {
+    SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None }
+}
+
+#[cfg(target_os = "linux")]
+fn skip_without_kernel_sctp<T>(result: crate::io::Result<T>, what: &str) -> Option<T> {
+    match result {
+        Ok(v) => Some(v),
+        Err(e) if super::is_native_sctp_unsupported(&e) => {
+            eprintln!("skipping: kernel SCTP unavailable ({what}: {e})");
+            None
+        }
+        Err(e) => panic!("{what}: {e}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn localhost_listener() -> Option<(SctpListener, SocketAddr)> {
+    let listener = skip_without_kernel_sctp(
+        SctpListener::bind_with_config("127.0.0.1:0", native_only()),
+        "native SCTP listener",
+    )?;
     let addr = listener.local_addr().unwrap();
-    (listener, addr)
+    Some((listener, addr))
+}
+
+#[cfg(target_os = "linux")]
+fn native_socket() -> Option<SctpSocket> {
+    skip_without_kernel_sctp(
+        SctpSocket::bind_with_config("127.0.0.1:0", native_only()),
+        "native one-to-many SCTP socket",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -567,11 +598,11 @@ fn localhost_listener() -> (SctpListener, SocketAddr) {
 fn bindx_add_is_visible_in_local_addrs_before_connecting() {
     // `local_addrs` used to return the bind-time cache for an unconnected stream,
     // so an address added with `bindx_add` was never reported.
-    let native = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
-    let stream = match SctpStream::bind_with_config("127.0.0.1:0".parse().unwrap(), native) {
-        Ok(s) => s,
-        Err(e) if e.kind() == ErrorKind::Unsupported => return, // no kernel SCTP
-        Err(e) => panic!("bind: {e}"),
+    let Some(stream) = skip_without_kernel_sctp(
+        SctpStream::bind_with_config("127.0.0.1:0".parse().unwrap(), native_only()),
+        "native SCTP stream bind",
+    ) else {
+        return;
     };
     let port = stream.local_addr().unwrap().port();
     stream.bindx_add(&[SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), port)]).unwrap();
@@ -583,7 +614,7 @@ fn bindx_add_is_visible_in_local_addrs_before_connecting() {
 #[cfg(target_os = "linux")]
 #[test]
 fn recv_nxtinfo_reports_next_message_metadata() {
-    let (listener, addr) = localhost_listener();
+    let Some((listener, addr)) = localhost_listener() else { return };
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let first = SctpSendInfo { stream: 7, ppid: 701, ..SctpSendInfo::default() };
@@ -592,7 +623,7 @@ fn recv_nxtinfo_reports_next_message_metadata() {
         stream.send_with_info(b"second", Some(&second)).unwrap();
     });
 
-    let stream = SctpStream::connect(addr).unwrap();
+    let stream = SctpStream::connect_with_config(addr, native_only()).unwrap();
     stream.set_recv_nxtinfo(true).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     thread::sleep(Duration::from_millis(100));
@@ -614,14 +645,14 @@ fn recv_nxtinfo_reports_next_message_metadata() {
 #[cfg(target_os = "linux")]
 #[test]
 fn plain_connect_reports_receive_metadata_and_record_flags() {
-    let (listener, addr) = localhost_listener();
+    let Some((listener, addr)) = localhost_listener() else { return };
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let info = SctpSendInfo { stream: 4, ppid: 404, ..SctpSendInfo::default() };
         stream.send_with_info(b"metadata", Some(&info)).unwrap();
     });
 
-    let stream = SctpStream::connect(addr).unwrap();
+    let stream = SctpStream::connect_with_config(addr, native_only()).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
     let mut buf = [0u8; 1024];
@@ -639,12 +670,12 @@ fn plain_connect_reports_receive_metadata_and_record_flags() {
 #[cfg(target_os = "linux")]
 #[test]
 fn one_to_many_socket_receives_message_and_peer_address() {
-    let socket = SctpSocket::bind("127.0.0.1:0").unwrap();
+    let Some(socket) = native_socket() else { return };
     let addr = socket.local_addrs().unwrap()[0];
     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
     let client = thread::spawn(move || {
-        let stream = SctpStream::connect(addr).unwrap();
+        let stream = SctpStream::connect_with_config(addr, native_only()).unwrap();
         let info = SctpSendInfo { stream: 6, ppid: 606, ..SctpSendInfo::default() };
         stream.send_with_info(b"one-to-many", Some(&info)).unwrap();
     });
@@ -662,7 +693,7 @@ fn one_to_many_socket_receives_message_and_peer_address() {
 #[cfg(target_os = "linux")]
 #[test]
 fn one_to_many_socket_can_still_send_to_stream_listener() {
-    let (listener, addr) = localhost_listener();
+    let Some((listener, addr)) = localhost_listener() else { return };
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut buf = [0u8; 1024];
@@ -670,7 +701,7 @@ fn one_to_many_socket_can_still_send_to_stream_listener() {
         assert_eq!(&buf[..received.len], b"send-to");
     });
 
-    let socket = SctpSocket::bind("127.0.0.1:0").unwrap();
+    let Some(socket) = native_socket() else { return };
     let info = SctpSendInfo { stream: 2, ppid: 202, ..SctpSendInfo::default() };
     socket.send_to_with_info(b"send-to", addr, Some(&info)).unwrap();
     server.join().unwrap();
@@ -679,7 +710,7 @@ fn one_to_many_socket_can_still_send_to_stream_listener() {
 #[cfg(target_os = "linux")]
 #[test]
 fn recv_message_reports_shutdown_notifications() {
-    let (listener, addr) = localhost_listener();
+    let Some((listener, addr)) = localhost_listener() else { return };
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let info = SctpSendInfo { stream: 3, ppid: 301, ..SctpSendInfo::default() };
@@ -688,7 +719,7 @@ fn recv_message_reports_shutdown_notifications() {
         stream.shutdown(Shutdown::Write).unwrap();
     });
 
-    let stream = SctpStream::connect(addr).unwrap();
+    let stream = SctpStream::connect_with_config(addr, native_only()).unwrap();
     stream
         .subscribe_events(SctpEventMask {
             association: true,
@@ -718,14 +749,14 @@ fn recv_message_reports_shutdown_notifications() {
 #[cfg(target_os = "linux")]
 #[test]
 fn fragment_interleave_can_be_enabled_without_breaking_traffic() {
-    let (listener, addr) = localhost_listener();
+    let Some((listener, addr)) = localhost_listener() else { return };
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let info = SctpSendInfo { stream: 9, ppid: 901, ..SctpSendInfo::default() };
         stream.send_with_info(b"interleave-ok", Some(&info)).unwrap();
     });
 
-    let stream = SctpStream::connect(addr).unwrap();
+    let stream = SctpStream::connect_with_config(addr, native_only()).unwrap();
     stream.set_fragment_interleave(2).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
