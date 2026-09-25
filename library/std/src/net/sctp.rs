@@ -476,6 +476,25 @@ impl SctpMultiAddr {
     ///
     /// The input must be non-empty, all addresses must be from the same address family,
     /// and all addresses must use the same port.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] if `addrs` is empty, mixes IPv4 and IPv6, or uses
+    /// more than one port.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpMultiAddr, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// assert_eq!(multi.addrs().len(), 2);
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn new(addrs: Vec<SocketAddr>) -> io::Result<Self> {
         if addrs.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty SCTP address set"));
@@ -500,6 +519,21 @@ impl SctpMultiAddr {
     }
 
     /// Returns the addresses in this endpoint.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpMultiAddr, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    /// ])?;
+    /// for addr in multi.addrs() {
+    ///     println!("{addr}");
+    /// }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn addrs(&self) -> &[SocketAddr] {
         &self.addrs
@@ -1627,11 +1661,47 @@ impl SctpSocketBackend {
 #[unstable(feature = "sctp", issue = "none")]
 impl SctpStream {
     /// Connects to a single remote SCTP endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.send_with_info(b"hello", None)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<SctpStream> {
         Self::connect_with_config(addr, SctpTransportConfig::default())
     }
 
     /// Connects to a single remote SCTP endpoint with an explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SctpTransportConfig, SctpTransportPolicy};
+    ///
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let stream = SctpStream::connect_with_config("127.0.0.1:9000", config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_with_config<A: ToSocketAddrs>(
         addr: A,
         config: SctpTransportConfig,
@@ -1642,6 +1712,24 @@ impl SctpStream {
     }
 
     /// Connects to a single remote SCTP endpoint after applying `SCTP_INITMSG`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpInitOptions, SctpStream};
+    ///
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// let stream = SctpStream::connect_with_init_options("127.0.0.1:9000", opts)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_with_init_options<A: ToSocketAddrs>(
         addr: A,
         opts: SctpInitOptions,
@@ -1651,6 +1739,26 @@ impl SctpStream {
 
     /// Connects to a single remote SCTP endpoint after applying `SCTP_INITMSG`
     /// and an explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpInitOptions, SctpStream, SctpTransportConfig, SctpTransportPolicy};
+    ///
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let stream =
+    ///     SctpStream::connect_with_init_options_and_config("127.0.0.1:9000", opts, config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_with_init_options_and_config<A: ToSocketAddrs>(
         addr: A,
         opts: SctpInitOptions,
@@ -1661,12 +1769,61 @@ impl SctpStream {
     }
 
     /// Connects to a remote SCTP endpoint represented by multiple peer addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpMultiAddr, SctpStream, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let stream = SctpStream::connect_multi(&multi)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_multi(remote: &SctpMultiAddr) -> io::Result<SctpStream> {
         Self::connect_multi_with_config(remote, SctpTransportConfig::default())
     }
 
     /// Connects to a remote SCTP endpoint represented by multiple peer addresses with an
     /// explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{
+    ///     SctpMultiAddr,
+    ///     SctpStream,
+    ///     SctpTransportConfig,
+    ///     SctpTransportPolicy,
+    ///     SocketAddr,
+    /// };
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let stream = SctpStream::connect_multi_with_config(&multi, config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_multi_with_config(
         remote: &SctpMultiAddr,
         config: SctpTransportConfig,
@@ -1676,6 +1833,28 @@ impl SctpStream {
     }
 
     /// Connects to a remote multi-address SCTP endpoint after applying `SCTP_INITMSG`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpInitOptions, SctpMultiAddr, SctpStream, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// let stream = SctpStream::connect_multi_with_init_options(&multi, opts)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_multi_with_init_options(
         remote: &SctpMultiAddr,
         opts: SctpInitOptions,
@@ -1689,6 +1868,36 @@ impl SctpStream {
 
     /// Connects to a remote multi-address SCTP endpoint after applying `SCTP_INITMSG`
     /// and an explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address cannot be resolved, the peer refuses or does not answer, or
+    /// the requested transport is unavailable: `NativeOnly` on a host without kernel SCTP, or
+    /// `UdpOnly` on a target without the user-space engine, fail with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{
+    ///     SctpInitOptions,
+    ///     SctpMultiAddr,
+    ///     SctpStream,
+    ///     SctpTransportConfig,
+    ///     SctpTransportPolicy,
+    ///     SocketAddr,
+    /// };
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let stream = SctpStream::connect_multi_with_init_options_and_config(&multi, opts, config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_multi_with_init_options_and_config(
         remote: &SctpMultiAddr,
         opts: SctpInitOptions,
@@ -1698,11 +1907,42 @@ impl SctpStream {
     }
 
     /// Creates an SCTP socket bound to a single local address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::bind(SocketAddr::from(([0, 0, 0, 0], 9000)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind(local: SocketAddr) -> io::Result<SctpStream> {
         Self::bind_with_config(local, SctpTransportConfig::default())
     }
 
     /// Creates an SCTP socket bound to a single local address with an explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SctpTransportConfig, SctpTransportPolicy, SocketAddr};
+    ///
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let stream = SctpStream::bind_with_config(SocketAddr::from(([0, 0, 0, 0], 9000)), config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_with_config(
         local: SocketAddr,
         config: SctpTransportConfig,
@@ -1711,11 +1951,56 @@ impl SctpStream {
     }
 
     /// Creates an SCTP socket bound to multiple local addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpMultiAddr, SctpStream, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let stream = SctpStream::bind_multi(&multi)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpStream> {
         Self::bind_multi_with_config(local, SctpTransportConfig::default())
     }
 
     /// Creates an SCTP socket bound to multiple local addresses with an explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{
+    ///     SctpMultiAddr,
+    ///     SctpStream,
+    ///     SctpTransportConfig,
+    ///     SctpTransportPolicy,
+    ///     SocketAddr,
+    /// };
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let stream = SctpStream::bind_multi_with_config(&multi, config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_multi_with_config(
         local: &SctpMultiAddr,
         config: SctpTransportConfig,
@@ -1724,16 +2009,69 @@ impl SctpStream {
     }
 
     /// Connects this bound SCTP socket to a single remote endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream is already connected, the address cannot be resolved, or the
+    /// peer cannot be reached. A non-blocking stream returns [`io::ErrorKind::WouldBlock`] while
+    /// the transport is still being selected.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::bind(SocketAddr::from(([0, 0, 0, 0], 9000)))?;
+    /// stream.connect_bound("127.0.0.1:9001")?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_bound<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
         self.0.connect_bound(addr)
     }
 
     /// Connects this bound SCTP socket to a remote multi-address endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream is already connected, the address cannot be resolved, or the
+    /// peer cannot be reached. A non-blocking stream returns [`io::ErrorKind::WouldBlock`] while
+    /// the transport is still being selected.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpMultiAddr, SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::bind(SocketAddr::from(([0, 0, 0, 0], 9000)))?;
+    /// let remote = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9001)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9001)),
+    /// ])?;
+    /// stream.connect_bound_multi(&remote)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn connect_bound_multi(&self, remote: &SctpMultiAddr) -> io::Result<()> {
         self.0.connect_bound_multi(remote.addrs())
     }
 
     /// Returns the primary remote address of this association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream is not connected.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.peer_addr()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
@@ -1748,6 +2086,19 @@ impl SctpStream {
     ///
     /// While a non-blocking connect is still selecting a transport this reports
     /// [`SctpTransport::Native`]; the choice is final once the connect completes.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SctpTransport};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// if stream.transport() != SctpTransport::Native {
+    ///     println!("carried by the user-space SCTP-over-UDP engine");
+    /// }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[unstable(feature = "sctp", issue = "none")]
     #[must_use]
     pub fn transport(&self) -> SctpTransport {
@@ -1755,219 +2106,931 @@ impl SctpStream {
     }
 
     /// Returns one local address currently used by this socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket has been closed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.local_addr()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
 
     /// Returns all remote addresses configured for this association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream is not connected.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.peer_addrs()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn peer_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.peer_addrs()
     }
 
     /// Returns all local addresses configured for this socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket has been closed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.local_addrs()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.local_addrs()
     }
 
     /// Enables or disables the SCTP Nagle-style bundling algorithm.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_nodelay(true)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_nodelay(&self, on: bool) -> io::Result<()> {
         self.0.set_nodelay(on)
     }
 
     /// Configures association setup options applied to future handshakes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpInitOptions, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// stream.set_init_options(opts)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
         self.0.set_init_options(opts)
     }
 
     /// Subscribes to SCTP socket events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpEventMask, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let mask = SctpEventMask {
+    ///     data_io: true,
+    ///     association: true,
+    ///     shutdown: true,
+    ///     ..Default::default()
+    /// };
+    /// stream.subscribe_events(mask)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         self.0.subscribe_events(mask)
     }
 
     /// Sends one user message and optional SCTP per-message metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association is closed or has failed ([`io::ErrorKind::BrokenPipe`],
+    /// [`io::ErrorKind::ConnectionAborted`]), the stream or flags are invalid
+    /// ([`io::ErrorKind::InvalidInput`]), a write timeout elapses ([`io::ErrorKind::TimedOut`]) or,
+    /// in non-blocking mode, the send queue is full ([`io::ErrorKind::WouldBlock`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpSendInfo, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let info = SctpSendInfo { stream: 1, ppid: 42u32.to_be(), ..Default::default() };
+    /// stream.send_with_info(b"hello", Some(&info))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn send_with_info(&self, buf: &[u8], info: Option<&SctpSendInfo>) -> io::Result<usize> {
         self.0.send_with_info(buf, info)
     }
 
     /// Configures retransmission timeout parameters on this socket or association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpRtoInfo, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let info = SctpRtoInfo { initial: 1000, min: 500, max: 4000, ..Default::default() };
+    /// stream.set_rto_info(info)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
         self.0.set_rto_info(info)
     }
 
     /// Configures delayed-SACK behavior on this socket or association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpDelayedSackInfo, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let info = SctpDelayedSackInfo { delay: 100, frequency: 2, ..Default::default() };
+    /// stream.set_delayed_sack(info)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
         self.0.set_delayed_sack(info)
     }
 
     /// Configures the default per-message send metadata used by plain writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpSendInfo, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let info = SctpSendInfo { stream: 1, ..Default::default() };
+    /// stream.set_default_send_info(info)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_default_send_info(&self, info: SctpSendInfo) -> io::Result<()> {
         self.0.set_default_send_info(info)
     }
 
     /// Configures default partial-reliability behavior for future messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SCTP_PR_TTL, SctpPrInfo, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let info = SctpPrInfo { policy: SCTP_PR_TTL, value: 500, ..Default::default() };
+    /// stream.set_default_prinfo(info)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_default_prinfo(&self, info: SctpPrInfo) -> io::Result<()> {
         self.0.set_default_prinfo(info)
     }
 
     /// Controls whether the kernel returns metadata for the next queued SCTP message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_recv_nxtinfo(true)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
         self.0.set_recv_nxtinfo(on)
     }
 
     /// Controls receive-side fragment interleaving behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_fragment_interleave(1)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_fragment_interleave(&self, level: u32) -> io::Result<()> {
         self.0.set_fragment_interleave(level)
     }
 
     /// Configures the SCTP_AUTOCLOSE timeout in seconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_autoclose(30)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
         self.0.set_autoclose(seconds)
     }
 
     /// Configures the maximum number of back-to-back packets sent by the stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_max_burst(4)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
         self.0.set_max_burst(value)
     }
 
     /// Configures the SCTP_MAXSEG send fragmentation threshold.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_maxseg(4)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
         self.0.set_maxseg(value)
     }
 
     /// Adds local addresses to the socket or active association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an address is invalid or not local, or [`io::ErrorKind::Unsupported`] on
+    /// the UDP transport, which has no multihoming.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.bindx_add(&[SocketAddr::from(([10, 0, 1, 1], 9000))])?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bindx_add(&self, addrs: &[SocketAddr]) -> io::Result<()> {
         self.0.bindx_add(addrs)
     }
 
     /// Removes local addresses from the socket or active association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an address is invalid or not local, or [`io::ErrorKind::Unsupported`] on
+    /// the UDP transport, which has no multihoming.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.bindx_remove(&[SocketAddr::from(([10, 0, 1, 1], 9000))])?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bindx_remove(&self, addrs: &[SocketAddr]) -> io::Result<()> {
         self.0.bindx_remove(addrs)
     }
 
     /// Requests a change to the primary destination address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an address is invalid or not local, or [`io::ErrorKind::Unsupported`] on
+    /// the UDP transport, which has no multihoming.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_primary_addr(SocketAddr::from(([10, 0, 1, 1], 9000)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
         self.0.set_primary_addr(addr)
     }
 
     /// Requests that the peer switch its primary path to one of our local addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an address is invalid or not local, or [`io::ErrorKind::Unsupported`] on
+    /// the UDP transport, which has no multihoming.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, SocketAddr};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_peer_primary_addr(SocketAddr::from(([10, 0, 1, 1], 9000)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_peer_primary_addr(&self, addr: SocketAddr) -> io::Result<()> {
         self.0.set_peer_primary_addr(addr)
     }
 
     /// Lists association identifiers currently present on this socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.assoc_ids()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         self.0.assoc_ids()
     }
 
-    /// Retrieves association status for the given association id, or for the current association when 0.
+    /// Retrieves association status for the given association id, or for the current
+    /// association when 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let id = stream.assoc_ids()?[0];
+    /// stream.assoc_status(id)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
         self.0.assoc_status(assoc_id)
     }
 
     /// Peels the given association off onto a dedicated SCTP stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let id = stream.assoc_ids()?[0];
+    /// let own = stream.peeloff(id)?;
+    /// own.send_with_info(b"hello", None)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStream> {
         self.0.peeloff(assoc_id).map(SctpStream)
     }
 
     /// Enables stream-reset support for the active association.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SCTP_STREAM_RESET_OUTGOING, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.enable_stream_reset(SCTP_STREAM_RESET_OUTGOING)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn enable_stream_reset(&self, flags: u16) -> io::Result<()> {
         self.0.enable_stream_reset(flags)
     }
 
     /// Requests a reset for the specified streams.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SCTP_STREAM_RESET_OUTGOING, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.reset_streams(SCTP_STREAM_RESET_OUTGOING, &[1, 2])?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn reset_streams(&self, flags: u16, streams: &[u16]) -> io::Result<()> {
         self.0.reset_streams(flags, streams)
     }
 
     /// Requests additional inbound and outbound streams.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.add_streams(2, 2)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn add_streams(&self, inbound: u16, outbound: u16) -> io::Result<()> {
         self.0.add_streams(inbound, outbound)
     }
 
     /// Configures SCTP AUTH chunk coverage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_auth_chunks(&[0x0a])?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_auth_chunks(&self, chunks: &[u8]) -> io::Result<()> {
         self.0.set_auth_chunks(chunks)
     }
 
     /// Installs or replaces an SCTP AUTH shared key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpAuthKey, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let key = SctpAuthKey { assoc_id: 0, key_id: 1, secret: b"s3cret".to_vec() };
+    /// stream.set_auth_key(&key)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_auth_key(&self, key: &SctpAuthKey) -> io::Result<()> {
         self.0.set_auth_key(key)
     }
 
     /// Switches the active SCTP AUTH key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let id = stream.assoc_ids()?[0];
+    /// stream.activate_auth_key(id, 1)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn activate_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
         self.0.activate_auth_key(assoc_id, key_id)
     }
 
     /// Deletes a previously installed SCTP AUTH key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let id = stream.assoc_ids()?[0];
+    /// stream.delete_auth_key(id, 1)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn delete_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
         self.0.delete_auth_key(assoc_id, key_id)
     }
 
     /// Selects the SCTP stream scheduler policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SCTP_SCHEDULER_RR, SctpStream};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_stream_scheduler(SCTP_SCHEDULER_RR)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_stream_scheduler(&self, scheduler: SctpScheduler) -> io::Result<()> {
         self.0.set_stream_scheduler(scheduler)
     }
 
     /// Sets a per-stream scheduler value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on the UDP transport, or an error if the operating
+    /// system rejects the request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_stream_scheduler_value(1, 10)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_stream_scheduler_value(&self, stream: u16, value: u16) -> io::Result<()> {
         self.0.set_stream_scheduler_value(stream, value)
     }
 
     /// Receives one user message and optional SCTP receive metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association has failed, a read timeout elapses
+    /// ([`io::ErrorKind::TimedOut`]) or, in non-blocking mode, nothing is available
+    /// ([`io::ErrorKind::WouldBlock`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let mut buf = [0u8; 1024];
+    /// let (len, info) = stream.recv_with_info(&mut buf)?;
+    /// println!("{} bytes on stream {:?}", len, info.map(|i| i.stream));
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn recv_with_info(&self, buf: &mut [u8]) -> io::Result<(usize, Option<SctpRecvInfo>)> {
         self.0.recv_with_info(buf)
     }
 
     /// Receives one SCTP user message or notification with typed metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association has failed, a read timeout elapses
+    /// ([`io::ErrorKind::TimedOut`]) or, in non-blocking mode, nothing is available
+    /// ([`io::ErrorKind::WouldBlock`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// let mut buf = [0u8; 1024];
+    /// let received = stream.recv_message(&mut buf)?;
+    /// if let Some(info) = received.info {
+    ///     println!("stream {} ppid {}", info.stream, u32::from_be(info.ppid));
+    /// }
+    /// let payload = &buf[..received.len];
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceive> {
         self.0.recv_message(buf)
     }
 
     /// Sets the read timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] if `dur` is `Some(Duration::ZERO)`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    /// use std::time::Duration;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         self.0.set_read_timeout(dur)
     }
 
     /// Sets the write timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] if `dur` is `Some(Duration::ZERO)`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    /// use std::time::Duration;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         self.0.set_write_timeout(dur)
     }
 
     /// Returns the read timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.read_timeout()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.read_timeout()
     }
 
     /// Returns the write timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.write_timeout()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.write_timeout()
     }
 
     /// Shuts down the read, write, or both halves of this SCTP socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpStream, Shutdown};
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.shutdown(Shutdown::Write)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn shutdown(&self, how: super::Shutdown) -> io::Result<()> {
         self.0.shutdown(how)
     }
 
     /// Moves this socket into or out of nonblocking mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.set_nonblocking(true)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
 
     /// Returns the pending socket error, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.take_error()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
     }
 
     /// Creates a new independently owned handle to the same SCTP socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpStream;
+    ///
+    /// let stream = SctpStream::connect("127.0.0.1:9000")?;
+    /// stream.try_clone()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn try_clone(&self) -> io::Result<SctpStream> {
         self.0.duplicate().map(SctpStream)
     }
@@ -2052,11 +3115,42 @@ impl Write for &SctpStream {
 #[unstable(feature = "sctp", issue = "none")]
 impl SctpListener {
     /// Creates an SCTP listener bound to a local address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpListener> {
         Self::bind_with_config(addr, SctpTransportConfig::default())
     }
 
     /// Creates an SCTP listener bound to a local address with an explicit transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpListener, SctpTransportConfig, SctpTransportPolicy};
+    ///
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let listener = SctpListener::bind_with_config("127.0.0.1:9000", config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_with_config<A: ToSocketAddrs>(
         addr: A,
         config: SctpTransportConfig,
@@ -2066,11 +3160,57 @@ impl SctpListener {
     }
 
     /// Creates an SCTP listener bound to multiple local addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpListener, SctpMultiAddr, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let listener = SctpListener::bind_multi(&multi)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpListener> {
         Self::bind_multi_with_config(local, SctpTransportConfig::default())
     }
 
-    /// Creates an SCTP listener bound to multiple local addresses with an explicit transport policy.
+    /// Creates an SCTP listener bound to multiple local addresses with an explicit transport
+    /// policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{
+    ///     SctpListener,
+    ///     SctpMultiAddr,
+    ///     SctpTransportConfig,
+    ///     SctpTransportPolicy,
+    ///     SocketAddr,
+    /// };
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let listener = SctpListener::bind_multi_with_config(&multi, config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_multi_with_config(
         local: &SctpMultiAddr,
         config: SctpTransportConfig,
@@ -2079,69 +3219,291 @@ impl SctpListener {
     }
 
     /// Accepts a new SCTP association.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the listener has failed, or [`io::ErrorKind::WouldBlock`] in
+    /// non-blocking mode when no association is pending.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// let (stream, peer) = listener.accept()?;
+    /// println!("association from {peer}");
+    /// let mut buf = [0u8; 1024];
+    /// let received = stream.recv_message(&mut buf)?;
+    /// println!("{} bytes", received.len);
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn accept(&self) -> io::Result<(SctpStream, SocketAddr)> {
         self.0.accept().map(|(s, a)| (SctpStream(s), a))
     }
 
     /// Returns one local address currently used by this listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket has been closed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.local_addr()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
 
     /// Returns all local addresses configured for this listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket has been closed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.local_addrs()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.local_addrs()
     }
 
     /// Configures association setup options applied to future accepted sockets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpInitOptions, SctpListener};
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// listener.set_init_options(opts)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
         self.0.set_init_options(opts)
     }
 
     /// Subscribes to SCTP socket events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpEventMask, SctpListener};
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// let mask = SctpEventMask {
+    ///     data_io: true,
+    ///     association: true,
+    ///     shutdown: true,
+    ///     ..Default::default()
+    /// };
+    /// listener.subscribe_events(mask)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         self.0.subscribe_events(mask)
     }
 
     /// Configures association setup options applied to future accepted sockets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpListener, SctpRtoInfo};
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// let info = SctpRtoInfo { initial: 1000, min: 500, max: 4000, ..Default::default() };
+    /// listener.set_rto_info(info)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_rto_info(&self, info: SctpRtoInfo) -> io::Result<()> {
         self.0.set_rto_info(info)
     }
 
     /// Configures delayed-SACK behavior on this listener socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpDelayedSackInfo, SctpListener};
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// let info = SctpDelayedSackInfo { delay: 100, frequency: 2, ..Default::default() };
+    /// listener.set_delayed_sack(info)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_delayed_sack(&self, info: SctpDelayedSackInfo) -> io::Result<()> {
         self.0.set_delayed_sack(info)
     }
 
     /// Configures the maximum number of back-to-back packets sent by the stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.set_max_burst(4)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
         self.0.set_max_burst(value)
     }
 
     /// Configures the SCTP_MAXSEG send fragmentation threshold.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.set_maxseg(4)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
         self.0.set_maxseg(value)
     }
 
     /// Moves this listener into or out of nonblocking mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.set_nonblocking(true)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
 
     /// Returns the pending socket error, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.take_error()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
     }
 
     /// Creates a new independently owned handle to the same SCTP listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// listener.try_clone()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn try_clone(&self) -> io::Result<SctpListener> {
         self.0.duplicate().map(SctpListener)
     }
 
     /// Returns an iterator over incoming SCTP associations.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpListener;
+    ///
+    /// let listener = SctpListener::bind("127.0.0.1:9000")?;
+    /// for stream in listener.incoming() {
+    ///     let stream = stream?;
+    ///     println!("association from {}", stream.peer_addr()?);
+    /// }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn incoming(&self) -> SctpIncoming<'_> {
         SctpIncoming { listener: self }
@@ -2151,12 +3513,43 @@ impl SctpListener {
 #[unstable(feature = "sctp", issue = "none")]
 impl SctpSocket {
     /// Creates an unconnected SCTP socket bound to one local address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<SctpSocket> {
         Self::bind_with_config(addr, SctpTransportConfig::default())
     }
 
     /// Creates an unconnected SCTP socket bound to one local address with an explicit
     /// transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpSocket, SctpTransportConfig, SctpTransportPolicy};
+    ///
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let socket = SctpSocket::bind_with_config("127.0.0.1:9000", config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_with_config<A: ToSocketAddrs>(
         addr: A,
         config: SctpTransportConfig,
@@ -2166,12 +3559,57 @@ impl SctpSocket {
     }
 
     /// Creates an unconnected SCTP socket bound to multiple local addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpMultiAddr, SctpSocket, SocketAddr};
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let socket = SctpSocket::bind_multi(&multi)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_multi(local: &SctpMultiAddr) -> io::Result<SctpSocket> {
         Self::bind_multi_with_config(local, SctpTransportConfig::default())
     }
 
     /// Creates an unconnected SCTP socket bound to multiple local addresses with an explicit
     /// transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is already in use or not local, or if the requested
+    /// transport is unavailable ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{
+    ///     SctpMultiAddr,
+    ///     SctpSocket,
+    ///     SctpTransportConfig,
+    ///     SctpTransportPolicy,
+    ///     SocketAddr,
+    /// };
+    ///
+    /// let multi = SctpMultiAddr::new(vec![
+    ///     SocketAddr::from(([10, 0, 0, 1], 9000)),
+    ///     SocketAddr::from(([10, 0, 1, 1], 9000)),
+    /// ])?;
+    /// let config = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    /// let socket = SctpSocket::bind_multi_with_config(&multi, config)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn bind_multi_with_config(
         local: &SctpMultiAddr,
         config: SctpTransportConfig,
@@ -2180,27 +3618,120 @@ impl SctpSocket {
     }
 
     /// Returns all local addresses configured for this socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket has been closed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.local_addrs()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.local_addrs()
     }
 
     /// Configures association setup options applied to future associations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpInitOptions, SctpSocket};
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let opts = SctpInitOptions { num_ostreams: 4, max_instreams: 4, ..Default::default() };
+    /// socket.set_init_options(opts)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_init_options(&self, opts: SctpInitOptions) -> io::Result<()> {
         self.0.set_init_options(opts)
     }
 
     /// Subscribes to SCTP socket events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpEventMask, SctpSocket};
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let mask = SctpEventMask {
+    ///     data_io: true,
+    ///     association: true,
+    ///     shutdown: true,
+    ///     ..Default::default()
+    /// };
+    /// socket.subscribe_events(mask)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn subscribe_events(&self, mask: SctpEventMask) -> io::Result<()> {
         self.0.subscribe_events(mask)
     }
 
     /// Configures the SCTP_AUTOCLOSE timeout in seconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.set_autoclose(30)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
         self.0.set_autoclose(seconds)
     }
 
     /// Sends one SCTP user message to a peer address and optional SCTP metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association is closed or has failed ([`io::ErrorKind::BrokenPipe`],
+    /// [`io::ErrorKind::ConnectionAborted`]), the stream or flags are invalid
+    /// ([`io::ErrorKind::InvalidInput`]), a write timeout elapses ([`io::ErrorKind::TimedOut`]) or,
+    /// in non-blocking mode, the send queue is full ([`io::ErrorKind::WouldBlock`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::{SctpSendInfo, SctpSocket, SocketAddr};
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let peer = SocketAddr::from(([127, 0, 0, 1], 9000));
+    /// let info = SctpSendInfo { stream: 2, ..Default::default() };
+    /// socket.send_to_with_info(b"hello", peer, Some(&info))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn send_to_with_info(
         &self,
         buf: &[u8],
@@ -2211,11 +3742,53 @@ impl SctpSocket {
     }
 
     /// Receives one SCTP user message or notification with metadata and peer address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association has failed, a read timeout elapses
+    /// ([`io::ErrorKind::TimedOut`]) or, in non-blocking mode, nothing is available
+    /// ([`io::ErrorKind::WouldBlock`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let mut buf = [0u8; 1024];
+    /// let received = socket.recv_message(&mut buf)?;
+    /// if let Some(notification) = received.receive.notification {
+    ///     println!("notification: {notification:?}");
+    /// } else if let Some(peer) = received.peer_addr {
+    ///     println!("{} bytes from {peer}", received.receive.len);
+    /// }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn recv_message(&self, buf: &mut [u8]) -> io::Result<SctpReceiveFrom> {
         self.0.recv_message(buf)
     }
 
     /// Receives one SCTP user message with optional metadata and peer address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association has failed, a read timeout elapses
+    /// ([`io::ErrorKind::TimedOut`]) or, in non-blocking mode, nothing is available
+    /// ([`io::ErrorKind::WouldBlock`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let mut buf = [0u8; 1024];
+    /// let (len, info, peer) = socket.recv_with_info(&mut buf)?;
+    /// println!("{len} bytes from {peer:?} on stream {:?}", info.map(|i| i.stream));
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn recv_with_info(
         &self,
         buf: &mut [u8],
@@ -2224,56 +3797,219 @@ impl SctpSocket {
     }
 
     /// Lists association identifiers currently present on this socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.assoc_ids()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         self.0.assoc_ids()
     }
 
     /// Retrieves association status for the given association id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let id = socket.assoc_ids()?[0];
+    /// socket.assoc_status(id)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
         self.0.assoc_status(assoc_id)
     }
 
     /// Peels the given association off onto a dedicated SCTP stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the association id is unknown ([`io::ErrorKind::InvalidInput`]), the
+    /// socket is closed, or the selected transport does not support the operation
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// let id = socket.assoc_ids()?[0];
+    /// let stream = socket.peeloff(id)?;
+    /// stream.send_with_info(b"hello", None)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStream> {
         self.0.peeloff(assoc_id).map(SctpStream)
     }
 
     /// Sets the read timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] if `dur` is `Some(Duration::ZERO)`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    /// use std::time::Duration;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         self.0.set_read_timeout(dur)
     }
 
     /// Sets the write timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] if `dur` is `Some(Duration::ZERO)`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    /// use std::time::Duration;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.set_write_timeout(Some(Duration::from_secs(5)))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
         self.0.set_write_timeout(dur)
     }
 
     /// Returns the read timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.read_timeout()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.read_timeout()
     }
 
     /// Returns the write timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.write_timeout()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.write_timeout()
     }
 
     /// Moves this socket into or out of nonblocking mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system rejects the value, or
+    /// [`io::ErrorKind::Unsupported`] when the selected transport cannot honour this option (see
+    /// `SCTP-TRANSPORT.md` for the UDP capability matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.set_nonblocking(true)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
 
     /// Returns the pending socket error, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.take_error()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[must_use]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
     }
 
     /// Creates a new independently owned handle to the same SCTP socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying socket operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(sctp)]
+    /// use std::net::SctpSocket;
+    ///
+    /// let socket = SctpSocket::bind("127.0.0.1:9000")?;
+    /// socket.try_clone()?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn try_clone(&self) -> io::Result<SctpSocket> {
         self.0.duplicate().map(SctpSocket)
     }
