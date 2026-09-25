@@ -236,7 +236,7 @@ impl Many {
                 }
                 if state.connecting.len() >= 128 && !state.connecting.contains_key(&peer) {
                     return Err(io::const_error!(
-                        io::ErrorKind::OutOfMemory,
+                        io::ErrorKind::QuotaExceeded,
                         "too many pending SCTP associations"
                     ));
                 }
@@ -432,7 +432,7 @@ impl State {
         } else {
             let id = self.next_id;
             self.next_id = id.checked_add(1).ok_or_else(|| {
-                io::const_error!(io::ErrorKind::OutOfMemory, "SCTP association ids exhausted")
+                io::const_error!(io::ErrorKind::QuotaExceeded, "SCTP association ids exhausted")
             })?;
             self.reverse.insert(route, id);
             self.routes.insert(id, route);
