@@ -541,14 +541,44 @@ impl SctpMultiAddr {
 }
 
 /// An SCTP stream between a local and remote endpoint.
+///
+/// # Background threads
+///
+/// When the SCTP-over-UDP engine is involved (the default `NativePreferred`
+/// policy on a host without kernel SCTP, `UdpOnly`, or a hybrid endpoint that
+/// accepts both transports) this type drives the protocol from a background
+/// thread it owns; a non-blocking deferred `connect` also runs its transport
+/// selection on a short-lived thread. These threads stop when the last handle
+/// is dropped (after a bounded drain) or when the pending operation completes.
+/// Purely native handles spawn nothing.
 #[unstable(feature = "sctp", issue = "none")]
 pub struct SctpStream(SctpStreamBackend);
 
 /// An SCTP listener socket.
+///
+/// # Background threads
+///
+/// When the SCTP-over-UDP engine is involved (the default `NativePreferred`
+/// policy on a host without kernel SCTP, `UdpOnly`, or a hybrid endpoint that
+/// accepts both transports) this type drives the protocol from a background
+/// thread it owns; a non-blocking deferred `connect` also runs its transport
+/// selection on a short-lived thread. These threads stop when the last handle
+/// is dropped (after a bounded drain) or when the pending operation completes.
+/// Purely native handles spawn nothing.
 #[unstable(feature = "sctp", issue = "none")]
 pub struct SctpListener(SctpListenerBackend);
 
 /// An unconnected one-to-many SCTP socket.
+///
+/// # Background threads
+///
+/// When the SCTP-over-UDP engine is involved (the default `NativePreferred`
+/// policy on a host without kernel SCTP, `UdpOnly`, or a hybrid endpoint that
+/// accepts both transports) this type drives the protocol from a background
+/// thread it owns; a non-blocking deferred `connect` also runs its transport
+/// selection on a short-lived thread. These threads stop when the last handle
+/// is dropped (after a bounded drain) or when the pending operation completes.
+/// Purely native handles spawn nothing.
 #[unstable(feature = "sctp", issue = "none")]
 pub struct SctpSocket(SctpSocketBackend);
 
