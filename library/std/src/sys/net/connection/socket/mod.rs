@@ -773,9 +773,9 @@ fn marshal_sockaddr_storage(addr: SocketAddr) -> [u8; 128] {
 }
 
 #[cfg(target_os = "linux")]
-fn parse_linux_sockaddrs(mut bytes: &[u8]) -> io::Result<Vec<SocketAddr>> {
-    let mut addrs = Vec::new();
-    while bytes.len() >= mem::size_of::<libc::sa_family_t>() {
+fn parse_linux_sockaddrs(mut bytes: &[u8], count: usize) -> io::Result<Vec<SocketAddr>> {
+    let mut addrs = Vec::with_capacity(count);
+    while addrs.len() < count && bytes.len() >= mem::size_of::<libc::sa_family_t>() {
         let family = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<libc::sa_family_t>()) };
         let size = match family as c_int {
             c::AF_INET => mem::size_of::<c::sockaddr_in>(),
@@ -1003,7 +1003,13 @@ fn get_addrs_sctp(sock: &Socket, option_name: c_int, assoc_id: i32) -> io::Resul
             len = expected;
             continue;
         }
-        return parse_linux_sockaddrs(&buf[mem::size_of::<SctpGetAddrsHeaderLinux>()..n]);
+        // The kernel reports `optlen` as the address bytes it copied, *excluding*
+        // the `sctp_getaddrs` header it also fills in, so `buf[header..n]` cuts the
+        // last address short. `addr_num` is authoritative; parse that many.
+        return parse_linux_sockaddrs(
+            &buf[mem::size_of::<SctpGetAddrsHeaderLinux>()..],
+            out.addr_num as usize,
+        );
     }
 }
 
@@ -1295,16 +1301,15 @@ impl SctpStream {
     }
 
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
-        match resolve_assoc_id(&self.inner) {
-            Ok(id) => local_addrs_sctp(&self.inner, id).or_else(|_| {
-                if self.local_addrs.is_empty() {
-                    self.socket_addr().map(|a| vec![a])
-                } else {
-                    Ok(self.local_addrs.clone())
-                }
-            }),
-            Err(_) if !self.local_addrs.is_empty() => Ok(self.local_addrs.clone()),
-            Err(_) => self.socket_addr().map(|a| vec![a]),
+        // Bound addresses belong to the endpoint, so the kernel reports them for
+        // association id 0 before any association exists. Ask it first: the
+        // cached bind list does not know about later `bindx_add`/`bindx_remove`.
+        let id = resolve_assoc_id(&self.inner).unwrap_or(0);
+        match local_addrs_sctp(&self.inner, id) {
+            Ok(addrs) if !addrs.is_empty() => Ok(addrs),
+            Ok(_) | Err(_) if !self.local_addrs.is_empty() => Ok(self.local_addrs.clone()),
+            Ok(_) => self.socket_addr().map(|a| vec![a]),
+            Err(e) => Err(e),
         }
     }
 
