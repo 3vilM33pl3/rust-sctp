@@ -44,7 +44,6 @@ use core::ops::RangeFrom;
 use core::str::FromStr;
 use core::time::Duration;
 use core::{cmp, mem};
-use log::{info, trace};
 use std::net::UdpSocket;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;

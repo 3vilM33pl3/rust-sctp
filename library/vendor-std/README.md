@@ -2,17 +2,13 @@
 
 Vendored copies of the crates that the standard library's user-space SCTP-over-UDP
 engine (`std::net::Sctp*` with the `UdpOnly`/`NativePreferred` transport policies)
-depends on. They live here, not under `src/tools/`, because `library/std` must only
+depends on — the engine itself and `bytes`. They live here, not under `src/tools/`, because `library/std` must only
 path-depend on crates that ship in the `rust-src` component.
 
 | Crate | Upstream version | Why it is vendored |
 | --- | --- | --- |
-| `sctp-proto` | 0.9.0 (webrtc-rs) | Sans-I/O SCTP protocol engine. Locally patched: `no_std` `Instant` shim (`src/instant.rs`), injectable random source (`with_random_source`), configurable INIT timeout, `thiserror` removed. See `SYNC-RTC-SCTP.md` for the upstream sync procedure. |
+| `sctp-proto` | 0.9.0 (webrtc-rs) | Sans-I/O SCTP protocol engine. Locally patched: `no_std` `Instant` shim (`src/instant.rs`), injectable random source (`with_random_source`), configurable INIT timeout, `thiserror` removed; `crc`, `log`, `rustc-hash` and `slab` replaced by in-crate code (`Crc32c` in `src/util.rs`, `src/slab.rs`, no-op log macros, plain `HashMap`). See `SYNC-RTC-SCTP.md` for the upstream sync procedure. |
 | `bytes` | crates.io | Used throughout `sctp-proto` (`Bytes`/`BytesMut`). |
-| `crc` / `crc-catalog` | crates.io | CRC-32C packet checksum. |
-| `log` | crates.io | Diagnostics inside `sctp-proto`; compiled out under `rustc-dep-of-std`. |
-| `rustc-hash` | crates.io | `FxHashMap` for association lookup. |
-| `slab` | crates.io | Association table. |
 
 Each crate's `Cargo.toml` differs from the published one (`Cargo.toml.orig`) only by
 the `rustc-dep-of-std` feature, which swaps the crate's `core`/`alloc` dependencies
