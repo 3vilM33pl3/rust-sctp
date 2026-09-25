@@ -651,6 +651,10 @@ impl UdpSctpSocket {
 
     fn wait_connected(&self, id: i32, nonblocking: bool) -> io::Result<()> {
         let mut state = self.lock();
+        // A configured write timeout bounds the handshake wait, like a native
+        // connect. Without one, the engine's INIT retransmit budget
+        // (`SctpInitOptions::max_attempts`) still ends the wait with a failure.
+        let deadline = state.session(id)?.options.write_timeout.map(|d| Instant::now() + d);
         loop {
             let s = state.session(id)?;
             if let Some(e) = &state.error {
@@ -668,7 +672,7 @@ impl UdpSctpSocket {
                     "SCTP association is connecting"
                 ));
             }
-            state = self.wait(state, None)?;
+            state = self.wait(state, deadline)?;
         }
     }
 
