@@ -811,7 +811,12 @@ impl UdpSctpSocket {
                             len: n,
                             info: Some(info),
                             notification: None,
-                            flags: SctpReceiveFlags { end_of_record: done, ..Default::default() },
+                            flags: SctpReceiveFlags {
+                                end_of_record: done,
+                                // More of this message remains: the caller's buffer was too small.
+                                truncated: !done,
+                                ..Default::default()
+                            },
                         },
                     });
                 }
