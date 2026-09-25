@@ -78,6 +78,7 @@ use super::*;
 use crate::collections::{HashMap, VecDeque};
 use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use crate::sync::{Arc, Condvar, Mutex, MutexGuard};
+use crate::sys::FromInner;
 use crate::thread;
 use crate::time::Instant;
 
@@ -89,8 +90,49 @@ pub(super) fn unsupported() -> io::Error {
     io::const_error!(io::ErrorKind::Unsupported, "operation is not supported by SCTP over UDP")
 }
 
-fn proto_error(e: impl fmt::Display) -> io::Error {
-    io::Error::other(e.to_string())
+/// Map an endpoint-level connect refusal onto an `ErrorKind`.
+fn connect_error(e: sctp_proto::ConnectError) -> io::Error {
+    use sctp_proto::ConnectError as C;
+    let kind = match e {
+        C::TooManyAssociations => io::ErrorKind::QuotaExceeded,
+        C::InvalidDnsName(_) | C::InvalidRemoteAddress(_) => io::ErrorKind::InvalidInput,
+        C::EndpointStopping => io::ErrorKind::NotConnected,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, e.to_string())
+}
+
+/// Map an engine error onto the `ErrorKind` a native socket would report, so
+/// callers can match on the kind instead of parsing a message.
+fn proto_error(e: sctp_proto::Error) -> io::Error {
+    use sctp_proto::Error as E;
+    let kind = match e {
+        E::ErrTryAgain => io::ErrorKind::WouldBlock,
+        E::ErrUnimplemented => io::ErrorKind::Unsupported,
+        E::ErrStreamClosed | E::ErrShutdownNonEstablished => io::ErrorKind::BrokenPipe,
+        E::ErrEof => io::ErrorKind::UnexpectedEof,
+        E::ErrAbortChunk(_)
+        | E::ErrAssociationInitFailed
+        | E::ErrAssociationClosedBeforeConn
+        | E::ErrAssociationHandshakeClosed
+        | E::ErrHandshakeInitAck
+        | E::ErrHandshakeCookieEcho => io::ErrorKind::ConnectionAborted,
+        E::ErrStreamNotExisted
+        | E::ErrStreamAlreadyExist
+        | E::ErrMaxDataChannelID
+        | E::ErrParameterType
+        | E::ErrShortBuffer
+        | E::ErrOutboundPacketTooLarge => io::ErrorKind::InvalidInput,
+        E::ErrStreamResetPending => io::ErrorKind::ResourceBusy,
+        E::ErrChecksumMismatch
+        | E::ErrInboundPacketTooLarge
+        | E::ErrPacketRawTooSmall
+        | E::ErrParseSctpChunkNotEnoughData
+        | E::ErrUnmarshalUnknownChunkType => io::ErrorKind::InvalidData,
+        // Chunk/parameter parse failures and internal state errors.
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, e.to_string())
 }
 
 #[derive(Clone)]
@@ -575,7 +617,7 @@ impl UdpSctpSocket {
         config.transport = Arc::new(state.options.transport());
         let now = state.now();
         let (handle, protocol) =
-            state.endpoint.connect_at(config, remote, now).map_err(proto_error)?;
+            state.endpoint.connect_at(config, remote, now).map_err(connect_error)?;
         let id = state.insert(protocol, handle, peer, remote, 0, false)?;
         self.shared.changed.notify_all();
         Ok(id)
