@@ -261,6 +261,7 @@ struct RawSockaddrInet6FreeBSD {
 }
 
 fn sctp_socket(family: c_int, ty: c_int) -> io::Result<Socket> {
+    // SAFETY: plain libc call with constant arguments; the result is checked with `cvt`.
     let fd = cvt(unsafe { c::socket(family, ty | c::SOCK_CLOEXEC, IPPROTO_SCTP_FREEBSD) })?;
     Ok(unsafe { Socket::from_raw_fd(fd) })
 }
@@ -301,6 +302,8 @@ fn notification_payload_len(payload: &[u8]) -> usize {
 
 fn read_send_info_freebsd(payload: &[u8], offset: usize) -> Option<crate::net::SctpSendInfo> {
     let bytes = payload.get(offset..offset + mem::size_of::<SctpSndInfoFreeBSD>())?;
+    // SAFETY: the preceding length check guarantees `size_of::<T>()` readable bytes, and `T` is
+    // plain data so any bit pattern is valid.
     let raw = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<SctpSndInfoFreeBSD>()) };
     Some(crate::net::SctpSendInfo {
         stream: raw.stream,
@@ -353,6 +356,8 @@ fn parse_sockaddr_storage(bytes: &[u8]) -> io::Result<Option<SocketAddr>> {
     match family {
         c::AF_INET => {
             let raw =
+                // SAFETY: the preceding length check guarantees `size_of::<T>()` readable bytes,
+                // and `T` is plain data so any bit pattern is valid.
                 unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<RawSockaddrInet4FreeBSD>()) };
             Ok(Some(SocketAddr::V4(crate::net::SocketAddrV4::new(
                 ip_v4_addr_from_c(raw.addr),
@@ -361,6 +366,8 @@ fn parse_sockaddr_storage(bytes: &[u8]) -> io::Result<Option<SocketAddr>> {
         }
         c::AF_INET6 => {
             let raw =
+                // SAFETY: the preceding length check guarantees `size_of::<T>()` readable bytes,
+                // and `T` is plain data so any bit pattern is valid.
                 unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<RawSockaddrInet6FreeBSD>()) };
             Ok(Some(SocketAddr::V6(crate::net::SocketAddrV6::new(
                 ip_v6_addr_from_c(raw.addr),
@@ -404,6 +411,8 @@ fn marshal_raw_sockaddrs_sctp(addrs: &[SocketAddr]) -> Vec<u8> {
                     addr: ip_v4_addr_to_c(addr.ip()),
                     zero: [0; 8],
                 };
+                // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for
+                // the duration of the borrow.
                 let bytes = unsafe {
                     crate::slice::from_raw_parts(
                         (&raw as *const RawSockaddrInet4FreeBSD).cast::<u8>(),
@@ -421,6 +430,8 @@ fn marshal_raw_sockaddrs_sctp(addrs: &[SocketAddr]) -> Vec<u8> {
                     addr: ip_v6_addr_to_c(addr.ip()),
                     scope_id: addr.scope_id(),
                 };
+                // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for
+                // the duration of the borrow.
                 let bytes = unsafe {
                     crate::slice::from_raw_parts(
                         (&raw as *const RawSockaddrInet6FreeBSD).cast::<u8>(),
@@ -447,6 +458,8 @@ fn marshal_sockaddr_storage(
                 addr: ip_v4_addr_to_c(addr.ip()),
                 zero: [0; 8],
             };
+            // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+            // duration of the borrow.
             let bytes = unsafe {
                 crate::slice::from_raw_parts(
                     (&raw as *const RawSockaddrInet4FreeBSD).cast::<u8>(),
@@ -464,6 +477,8 @@ fn marshal_sockaddr_storage(
                 addr: ip_v6_addr_to_c(addr.ip()),
                 scope_id: addr.scope_id(),
             };
+            // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+            // duration of the borrow.
             let bytes = unsafe {
                 crate::slice::from_raw_parts(
                     (&raw as *const RawSockaddrInet6FreeBSD).cast::<u8>(),
@@ -483,6 +498,8 @@ fn set_sockopt_bytes(
     bytes: &[u8],
 ) -> io::Result<()> {
     let ptr = if bytes.is_empty() { ptr::null() } else { bytes.as_ptr().cast::<c::c_void>() };
+    // SAFETY: the pointer and length describe a live byte buffer for the duration of the call, on a
+    // valid fd.
     cvt(unsafe {
         c::setsockopt(sock.as_raw(), level, option_name, ptr, bytes.len() as c::socklen_t)
     })?;
@@ -498,6 +515,8 @@ fn get_sockopt_bytes(
     let mut len = bytes.len() as c::socklen_t;
     let ptr =
         if bytes.is_empty() { ptr::null_mut() } else { bytes.as_mut_ptr().cast::<c::c_void>() };
+    // SAFETY: the pointer and length describe the caller's buffer; the kernel writes at most `len`
+    // bytes and updates `len`.
     cvt(unsafe { c::getsockopt(sock.as_raw(), level, option_name, ptr, &mut len) })?;
     Ok(len as usize)
 }
@@ -546,6 +565,8 @@ fn assoc_ids_sctp(sock: &Socket) -> io::Result<Vec<i32>> {
     if n < mem::size_of::<SctpAssocIdListHeaderFreeBSD>() {
         return Err(io::const_error!(ErrorKind::InvalidData, "short SCTP assoc id list response",));
     }
+    // SAFETY: the preceding length check guarantees `size_of::<T>()` readable bytes, and `T` is
+    // plain data so any bit pattern is valid.
     let hdr = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<SctpAssocIdListHeaderFreeBSD>()) };
     let mut ids = Vec::with_capacity(hdr.count as usize);
     let mut offset = mem::size_of::<SctpAssocIdListHeaderFreeBSD>();
@@ -600,6 +621,8 @@ fn assoc_status_sctp(sock: &Socket, assoc_id: i32) -> io::Result<crate::net::Sct
             mtu: 0,
         },
     };
+    // SAFETY: views a `#[repr(C)]` plain-data struct as writable bytes for exactly its size; the
+    // kernel writes a value of the same type.
     let buf = unsafe {
         crate::slice::from_raw_parts_mut(
             (&mut raw as *mut SctpStatusFreeBSD).cast::<u8>(),
@@ -630,6 +653,8 @@ fn subscribe_events_sctp(sock: &Socket, mask: crate::net::SctpEventMask) -> io::
     // also enabled the legacy SCTP_SEND_FAILED notification, whose layout the
     // parser does not handle, so it is deliberately not applied.
     if mask.data_io {
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
     }
     let events = [
@@ -650,6 +675,8 @@ fn subscribe_events_sctp(sock: &Socket, mask: crate::net::SctpEventMask) -> io::
     let mut applied: Vec<(u16, u8)> = Vec::with_capacity(events.len());
     for (event_type, on) in events {
         let mut prev = SctpEventFreeBSD { assoc_id: 0, event_type, on: 0, _pad: 0 };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as writable bytes for exactly its size;
+        // the kernel writes a value of the same type.
         let prev_bytes = unsafe {
             crate::slice::from_raw_parts_mut(
                 (&mut prev as *mut SctpEventFreeBSD).cast::<u8>(),
@@ -659,9 +686,13 @@ fn subscribe_events_sctp(sock: &Socket, mask: crate::net::SctpEventMask) -> io::
         let had_prev =
             get_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, prev_bytes).is_ok();
         let evt = SctpEventFreeBSD { assoc_id: 0, event_type, on: on as u8, _pad: 0 };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         if let Err(e) = unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, evt) } {
             for (t, was_on) in applied {
                 let undo = SctpEventFreeBSD { assoc_id: 0, event_type: t, on: was_on, _pad: 0 };
+                // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the
+                // kernel's option value, and the fd is live for `&self`.
                 let _ = unsafe { setsockopt(sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_EVENT, undo) };
             }
             return Err(e);
@@ -795,10 +826,14 @@ impl SctpStream {
         init();
         each_addr(addr, |addr| {
             let sock = sctp_socket(addr_family(addr), c::SOCK_STREAM)?;
+            // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's
+            // option value, and the fd is live for `&self`.
             unsafe {
                 setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
             }?;
             sock.connect(addr)?;
+            // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+            // getsockname/getpeername on a live fd.
             let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
             Ok(SctpStream {
                 inner: sock,
@@ -822,11 +857,15 @@ impl SctpStream {
                 max_attempts: opts.max_attempts,
                 max_init_timeout: opts.max_init_timeout,
             };
+            // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's
+            // option value, and the fd is live for `&self`.
             unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_INITMSG, raw) }?;
             unsafe {
                 setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
             }?;
             sock.connect(addr)?;
+            // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+            // getsockname/getpeername on a live fd.
             let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
             Ok(SctpStream {
                 inner: sock,
@@ -844,6 +883,8 @@ impl SctpStream {
             return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let assoc_id = connect_addrs_sctp(&sock, addrs)?;
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
@@ -870,9 +911,13 @@ impl SctpStream {
             max_attempts: opts.max_attempts,
             max_init_timeout: opts.max_init_timeout,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_INITMSG, raw) }?;
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let assoc_id = connect_addrs_sctp(&sock, addrs)?;
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         Ok(SctpStream {
             inner: sock,
@@ -885,9 +930,13 @@ impl SctpStream {
     pub fn bind(addr: SocketAddr) -> io::Result<SctpStream> {
         init();
         let sock = sctp_socket(addr_family(&addr), c::SOCK_STREAM)?;
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addr);
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         Ok(SctpStream {
             inner: sock,
@@ -903,12 +952,16 @@ impl SctpStream {
             return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addrs[0]);
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         if addrs.len() > 1 {
             bind_addrs_sctp(&sock, &addrs[1..])?;
         }
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         Ok(SctpStream {
             inner: sock,
@@ -982,10 +1035,14 @@ impl SctpStream {
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         unsafe { sockname(|buf, len| c::getpeername(self.inner.as_raw(), buf, len)) }
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         unsafe { sockname(|buf, len| c::getsockname(self.inner.as_raw(), buf, len)) }
     }
 
@@ -1015,6 +1072,8 @@ impl SctpStream {
     }
 
     pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe {
             setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_NODELAY, nodelay as c_int)
         }
@@ -1027,6 +1086,8 @@ impl SctpStream {
             max_attempts: opts.max_attempts,
             max_init_timeout: opts.max_init_timeout,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_INITMSG, raw) }
     }
 
@@ -1041,6 +1102,8 @@ impl SctpStream {
             max: info.max,
             min: info.min,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RTOINFO, raw) }
     }
 
@@ -1050,6 +1113,8 @@ impl SctpStream {
             delay: info.delay,
             frequency: info.frequency,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_DELAYED_SACK, raw) }
     }
 
@@ -1061,6 +1126,8 @@ impl SctpStream {
             context: info.context,
             assoc_id: info.assoc_id,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_DEFAULT_SNDINFO, raw) }
     }
 
@@ -1071,6 +1138,8 @@ impl SctpStream {
             value: info.value,
             assoc_id: info.assoc_id,
         };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_DEFAULT_PRINFO, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpPrInfoFreeBSD).cast::<u8>(),
@@ -1081,27 +1150,37 @@ impl SctpStream {
 
     pub fn set_recv_nxtinfo(&self, on: bool) -> io::Result<()> {
         if on {
+            // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's
+            // option value, and the fd is live for `&self`.
             unsafe {
                 setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
             }?;
         }
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe {
             setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVNXTINFO, on as c_int)
         }
     }
 
     pub fn set_fragment_interleave(&self, level: u32) -> io::Result<()> {
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe {
             setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_FRAGMENT_INTERLEAVE, level)
         }
     }
 
     pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_AUTOCLOSE, seconds) }
     }
 
     pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
         let raw = SctpAssocValueFreeBSD { assoc_id: self.assoc_id, value };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_MAX_BURST, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAssocValueFreeBSD).cast::<u8>(),
@@ -1112,6 +1191,8 @@ impl SctpStream {
 
     pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
         let raw = SctpAssocValueFreeBSD { assoc_id: 0, value };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_MAXSEG, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAssocValueFreeBSD).cast::<u8>(),
@@ -1134,6 +1215,8 @@ impl SctpStream {
             assoc_id: resolve_assoc_id(&self.inner, self.assoc_id)?,
             _padding: [0; 4],
         };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_PRIMARY_ADDR, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpPrimaryAddrFreeBSD).cast::<u8>(),
@@ -1152,6 +1235,8 @@ impl SctpStream {
             &self.inner,
             IPPROTO_SCTP_FREEBSD,
             SCTP_SOCKOPT_SET_PEER_PRIMARY,
+            // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+            // duration of the borrow.
             unsafe {
                 crate::slice::from_raw_parts(
                     (&raw as *const SctpPrimaryAddrFreeBSD).cast::<u8>(),
@@ -1175,9 +1260,13 @@ impl SctpStream {
     pub fn peeloff(&self, assoc_id: i32) -> io::Result<SctpStream> {
         let resolved =
             if assoc_id == 0 { resolve_assoc_id(&self.inner, self.assoc_id)? } else { assoc_id };
+        // SAFETY: FFI into libc with a live fd and an association id; the result is checked with
+        // `cvt`.
         let fd = cvt(unsafe { sctp_peeloff(self.inner.as_raw(), resolved as u32) })? as c_int;
         let sock = unsafe { Socket::from_raw_fd(fd) };
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         let peer = unsafe { sockname(|buf, len| c::getpeername(sock.as_raw(), buf, len)) }?;
         Ok(SctpStream {
@@ -1194,6 +1283,8 @@ impl SctpStream {
             &self.inner,
             IPPROTO_SCTP_FREEBSD,
             SCTP_SOCKOPT_ENABLE_STREAM_RESET,
+            // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+            // duration of the borrow.
             unsafe {
                 crate::slice::from_raw_parts(
                     (&raw as *const SctpAssocValueFreeBSD).cast::<u8>(),
@@ -1212,6 +1303,8 @@ impl SctpStream {
             vec![0u8; mem::size_of::<SctpResetStreamsHeaderFreeBSD>() + streams.len() * 2];
         let hdr =
             SctpResetStreamsHeaderFreeBSD { assoc_id, flags, number_streams: streams.len() as u16 };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         bytes[..mem::size_of::<SctpResetStreamsHeaderFreeBSD>()].copy_from_slice(unsafe {
             crate::slice::from_raw_parts(
                 (&hdr as *const SctpResetStreamsHeaderFreeBSD).cast::<u8>(),
@@ -1232,6 +1325,8 @@ impl SctpStream {
             inbound_streams: inbound,
             outbound_streams: outbound,
         };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_ADD_STREAMS, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAddStreamsFreeBSD).cast::<u8>(),
@@ -1247,6 +1342,8 @@ impl SctpStream {
                 &self.inner,
                 IPPROTO_SCTP_FREEBSD,
                 SCTP_SOCKOPT_AUTH_CHUNK,
+                // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for
+                // the duration of the borrow.
                 unsafe {
                     crate::slice::from_raw_parts(
                         (&raw as *const SctpAuthChunkFreeBSD).cast::<u8>(),
@@ -1268,6 +1365,8 @@ impl SctpStream {
             key_id: key.key_id,
             key_length: key.secret.len() as u16,
         };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         bytes[..mem::size_of::<SctpAuthKeyHeaderFreeBSD>()].copy_from_slice(unsafe {
             crate::slice::from_raw_parts(
                 (&hdr as *const SctpAuthKeyHeaderFreeBSD).cast::<u8>(),
@@ -1280,6 +1379,8 @@ impl SctpStream {
 
     pub fn activate_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
         let raw = SctpAuthKeyIdFreeBSD { assoc_id, key_id, _pad: 0 };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_AUTH_ACTIVE_KEY, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAuthKeyIdFreeBSD).cast::<u8>(),
@@ -1290,6 +1391,8 @@ impl SctpStream {
 
     pub fn delete_auth_key(&self, assoc_id: i32, key_id: u16) -> io::Result<()> {
         let raw = SctpAuthKeyIdFreeBSD { assoc_id, key_id, _pad: 0 };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_AUTH_DELETE_KEY, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAuthKeyIdFreeBSD).cast::<u8>(),
@@ -1304,6 +1407,8 @@ impl SctpStream {
             &self.inner,
             IPPROTO_SCTP_FREEBSD,
             SCTP_SOCKOPT_STREAM_SCHEDULER,
+            // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+            // duration of the borrow.
             unsafe {
                 crate::slice::from_raw_parts(
                     (&raw as *const SctpAssocValueFreeBSD).cast::<u8>(),
@@ -1319,6 +1424,8 @@ impl SctpStream {
             &self.inner,
             IPPROTO_SCTP_FREEBSD,
             SCTP_SOCKOPT_STREAM_SCHEDULER_VALUE,
+            // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+            // duration of the borrow.
             unsafe {
                 crate::slice::from_raw_parts(
                     (&raw as *const SctpStreamValueFreeBSD).cast::<u8>(),
@@ -1337,19 +1444,29 @@ impl SctpStream {
 
         let mut iov =
             [libc::iovec { iov_base: buf.as_ptr().cast_mut().cast(), iov_len: buf.len() }];
+        // SAFETY: all-zero bytes are a valid value for this `#[repr(C)]` integer/pointer-only
+        // struct.
         let mut msg: libc::msghdr = unsafe { mem::zeroed() };
         msg.msg_iov = (&raw mut iov) as *mut _;
         msg.msg_iovlen = 1;
 
         #[repr(C)]
         union Cmsg {
+            // SAFETY: `CMSG_SPACE` is a pure size computation.
             buf: [u8; unsafe { CMSG_SPACE(mem::size_of::<SctpSndInfoFreeBSD>() as u32) as usize }],
             _align: libc::cmsghdr,
         }
+        // SAFETY: all-zero bytes are a valid value for this `#[repr(C)]` integer/pointer-only
+        // struct.
         let mut cmsg: Cmsg = unsafe { mem::zeroed() };
         if let Some(info) = info {
             msg.msg_control = (&raw mut cmsg.buf).cast();
+            // SAFETY: `Cmsg` is only ever initialised through its `buf` field, so reading it is
+            // sound.
             msg.msg_controllen = mem::size_of_val(unsafe { &cmsg.buf }) as _;
+            // SAFETY: libc's CMSG_* helpers walk the `msghdr`/`cmsghdr` this function built into a
+            // buffer sized with `CMSG_SPACE`, and every header is length-checked before its data is
+            // read.
             unsafe {
                 let hdr = CMSG_FIRSTHDR((&raw mut msg) as *mut _);
                 if !hdr.is_null() {
@@ -1378,6 +1495,8 @@ impl SctpStream {
         use libc::{CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_NXTHDR, CMSG_SPACE};
 
         let mut iov = [libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() }];
+        // SAFETY: all-zero bytes are a valid value for this `#[repr(C)]` integer/pointer-only
+        // struct.
         let mut msg: libc::msghdr = unsafe { mem::zeroed() };
         msg.msg_iov = (&raw mut iov) as *mut _;
         msg.msg_iovlen = 1;
@@ -1389,12 +1508,15 @@ impl SctpStream {
 
         #[repr(C)]
         union Cmsg {
+            // SAFETY: `CMSG_SPACE` is a pure size computation.
             buf: [u8; unsafe {
                 (CMSG_SPACE(mem::size_of::<SctpRcvInfoFreeBSD>() as u32) as usize)
                     + (CMSG_SPACE(mem::size_of::<SctpNxtInfoFreeBSD>() as u32) as usize)
             }],
             _align: libc::cmsghdr,
         }
+        // SAFETY: all-zero bytes are a valid value for this `#[repr(C)]` integer/pointer-only
+        // struct.
         let mut cmsg: Cmsg = unsafe { mem::zeroed() };
         msg.msg_control = (&raw mut cmsg.buf).cast();
         msg.msg_controllen = mem::size_of_val(unsafe { &cmsg.buf }) as _;
@@ -1402,6 +1524,9 @@ impl SctpStream {
         let n = self.inner.recv_msg(&mut msg)?;
         let mut recv_info = None;
         let mut next_info = None;
+        // SAFETY: libc's CMSG_* helpers walk the `msghdr`/`cmsghdr` this function built into a
+        // buffer sized with `CMSG_SPACE`, and every header is length-checked before its data is
+        // read.
         unsafe {
             let mut hdr = CMSG_FIRSTHDR((&raw mut msg) as *mut _);
             while !hdr.is_null() {
@@ -1455,6 +1580,8 @@ impl SctpStream {
             control_truncated: (msg.msg_flags & libc::MSG_CTRUNC) != 0,
         };
         let peer_addr = if want_peer_addr && msg.msg_namelen > 0 {
+            // SAFETY: the kernel filled `storage` with `len` bytes of a valid sockaddr in the
+            // preceding successful call.
             unsafe { socket_addr_from_c(peer_storage.as_ptr(), msg.msg_namelen as usize).ok() }
         } else {
             None
@@ -1519,11 +1646,15 @@ impl SctpListener {
         init();
         each_addr(addr, |addr| {
             let sock = sctp_socket(addr_family(addr), c::SOCK_STREAM)?;
+            // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's
+            // option value, and the fd is live for `&self`.
             unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
             unsafe {
                 setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
             }?;
             let (raw, len) = socket_addr_to_c(addr);
+            // SAFETY: `raw` and `len` describe a valid sockaddr that outlives the call, on a live
+            // fd.
             cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
             cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
             let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
@@ -1537,19 +1668,25 @@ impl SctpListener {
             return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_STREAM)?;
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addrs[0]);
+        // SAFETY: `raw` and `len` describe a valid sockaddr that outlives the call, on a live fd.
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         if addrs.len() > 1 {
             bind_addrs_sctp(&sock, &addrs[1..])?;
         }
+        // SAFETY: plain libc call on a live fd.
         cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         Ok(SctpListener { inner: sock, local_addrs: normalize_bound_addrs(addrs, local.port()) })
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+        // getsockname/getpeername on a live fd.
         unsafe { sockname(|buf, len| c::getsockname(self.inner.as_raw(), buf, len)) }
     }
 
@@ -1565,6 +1702,8 @@ impl SctpListener {
         let mut storage = MaybeUninit::<c::sockaddr_storage>::uninit();
         let mut len = mem::size_of::<c::sockaddr_storage>() as c::socklen_t;
         let sock = self.inner.accept(storage.as_mut_ptr() as *mut _, &mut len)?;
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let addr = unsafe { socket_addr_from_c(storage.as_ptr(), len as usize)? };
         Ok((
@@ -1591,6 +1730,8 @@ impl SctpListener {
             max_attempts: opts.max_attempts,
             max_init_timeout: opts.max_init_timeout,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_INITMSG, raw) }
     }
 
@@ -1605,6 +1746,8 @@ impl SctpListener {
             max: info.max,
             min: info.min,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RTOINFO, raw) }
     }
 
@@ -1614,11 +1757,15 @@ impl SctpListener {
             delay: info.delay,
             frequency: info.frequency,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_DELAYED_SACK, raw) }
     }
 
     pub fn set_max_burst(&self, value: u32) -> io::Result<()> {
         let raw = SctpAssocValueFreeBSD { assoc_id: 0, value };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_MAX_BURST, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAssocValueFreeBSD).cast::<u8>(),
@@ -1629,6 +1776,8 @@ impl SctpListener {
 
     pub fn set_maxseg(&self, value: u32) -> io::Result<()> {
         let raw = SctpAssocValueFreeBSD { assoc_id: 0, value };
+        // SAFETY: views a `#[repr(C)]` plain-data struct as bytes for exactly its size, for the
+        // duration of the borrow.
         set_sockopt_bytes(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_MAXSEG, unsafe {
             crate::slice::from_raw_parts(
                 (&raw as *const SctpAssocValueFreeBSD).cast::<u8>(),
@@ -1676,11 +1825,15 @@ impl SctpSocket {
         init();
         each_addr(addr, |addr| {
             let sock = sctp_socket(addr_family(addr), c::SOCK_SEQPACKET)?;
+            // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's
+            // option value, and the fd is live for `&self`.
             unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
             unsafe {
                 setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int)
             }?;
             let (raw, len) = socket_addr_to_c(addr);
+            // SAFETY: `raw` and `len` describe a valid sockaddr that outlives the call, on a live
+            // fd.
             cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
             cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
             let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
@@ -1694,13 +1847,17 @@ impl SctpSocket {
             return Err(io::const_error!(io::ErrorKind::InvalidInput, "empty SCTP address set"));
         }
         let sock = sctp_socket(addr_family(&addrs[0]), c::SOCK_SEQPACKET)?;
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&sock, c::SOL_SOCKET, c::SO_REUSEADDR, 1 as c_int)? };
         unsafe { setsockopt(&sock, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_RECVRCVINFO, 1 as c_int) }?;
         let (raw, len) = socket_addr_to_c(&addrs[0]);
+        // SAFETY: `raw` and `len` describe a valid sockaddr that outlives the call, on a live fd.
         cvt(unsafe { c::bind(sock.as_raw(), raw.as_ptr(), len as _) })?;
         if addrs.len() > 1 {
             bind_addrs_sctp(&sock, &addrs[1..])?;
         }
+        // SAFETY: plain libc call on a live fd.
         cvt(unsafe { c::listen(sock.as_raw(), 128) })?;
         let local = unsafe { sockname(|buf, len| c::getsockname(sock.as_raw(), buf, len)) }?;
         Ok(SctpSocket { inner: sock, local_addrs: normalize_bound_addrs(addrs, local.port()) })
@@ -1714,6 +1871,8 @@ impl SctpSocket {
 
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         if self.local_addrs.is_empty() {
+            // SAFETY: the closure only forwards the buffer and length that `sockname` allocates to
+            // getsockname/getpeername on a live fd.
             unsafe { sockname(|buf, len| c::getsockname(self.inner.as_raw(), buf, len)) }
                 .map(|addr| vec![addr])
         } else {
@@ -1728,6 +1887,8 @@ impl SctpSocket {
             max_attempts: opts.max_attempts,
             max_init_timeout: opts.max_init_timeout,
         };
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_INITMSG, raw) }
     }
 
@@ -1736,6 +1897,8 @@ impl SctpSocket {
     }
 
     pub fn set_autoclose(&self, seconds: u32) -> io::Result<()> {
+        // SAFETY: the payload is a `#[repr(C)]` plain-data struct laid out like the kernel's option
+        // value, and the fd is live for `&self`.
         unsafe { setsockopt(&self.inner, IPPROTO_SCTP_FREEBSD, SCTP_SOCKOPT_AUTOCLOSE, seconds) }
     }
 
@@ -1749,6 +1912,8 @@ impl SctpSocket {
 
         let mut iov =
             [libc::iovec { iov_base: buf.as_ptr().cast_mut().cast(), iov_len: buf.len() }];
+        // SAFETY: all-zero bytes are a valid value for this `#[repr(C)]` integer/pointer-only
+        // struct.
         let mut msg: libc::msghdr = unsafe { mem::zeroed() };
         msg.msg_iov = (&raw mut iov) as *mut _;
         msg.msg_iovlen = 1;
@@ -1759,13 +1924,21 @@ impl SctpSocket {
 
         #[repr(C)]
         union Cmsg {
+            // SAFETY: `CMSG_SPACE` is a pure size computation.
             buf: [u8; unsafe { CMSG_SPACE(mem::size_of::<SctpSndInfoFreeBSD>() as u32) as usize }],
             _align: libc::cmsghdr,
         }
+        // SAFETY: all-zero bytes are a valid value for this `#[repr(C)]` integer/pointer-only
+        // struct.
         let mut cmsg: Cmsg = unsafe { mem::zeroed() };
         if let Some(info) = info {
             msg.msg_control = (&raw mut cmsg.buf).cast();
+            // SAFETY: `Cmsg` is only ever initialised through its `buf` field, so reading it is
+            // sound.
             msg.msg_controllen = mem::size_of_val(unsafe { &cmsg.buf }) as _;
+            // SAFETY: libc's CMSG_* helpers walk the `msghdr`/`cmsghdr` this function built into a
+            // buffer sized with `CMSG_SPACE`, and every header is length-checked before its data is
+            // read.
             unsafe {
                 let hdr = CMSG_FIRSTHDR((&raw mut msg) as *mut _);
                 if !hdr.is_null() {
