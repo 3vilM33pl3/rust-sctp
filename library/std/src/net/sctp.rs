@@ -500,6 +500,7 @@ impl SctpMultiAddr {
     }
 
     /// Returns the addresses in this endpoint.
+    #[must_use]
     pub fn addrs(&self) -> &[SocketAddr] {
         &self.addrs
     }
@@ -1733,6 +1734,7 @@ impl SctpStream {
     }
 
     /// Returns the primary remote address of this association.
+    #[must_use]
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
     }
@@ -1753,16 +1755,19 @@ impl SctpStream {
     }
 
     /// Returns one local address currently used by this socket.
+    #[must_use]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
 
     /// Returns all remote addresses configured for this association.
+    #[must_use]
     pub fn peer_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.peer_addrs()
     }
 
     /// Returns all local addresses configured for this socket.
+    #[must_use]
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.local_addrs()
     }
@@ -1853,11 +1858,13 @@ impl SctpStream {
     }
 
     /// Lists association identifiers currently present on this socket.
+    #[must_use]
     pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         self.0.assoc_ids()
     }
 
     /// Retrieves association status for the given association id, or for the current association when 0.
+    #[must_use]
     pub fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
         self.0.assoc_status(assoc_id)
     }
@@ -1933,11 +1940,13 @@ impl SctpStream {
     }
 
     /// Returns the read timeout.
+    #[must_use]
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.read_timeout()
     }
 
     /// Returns the write timeout.
+    #[must_use]
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.write_timeout()
     }
@@ -1953,6 +1962,7 @@ impl SctpStream {
     }
 
     /// Returns the pending socket error, if any.
+    #[must_use]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
     }
@@ -2036,11 +2046,13 @@ impl SctpListener {
     }
 
     /// Returns one local address currently used by this listener.
+    #[must_use]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
 
     /// Returns all local addresses configured for this listener.
+    #[must_use]
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.local_addrs()
     }
@@ -2081,6 +2093,7 @@ impl SctpListener {
     }
 
     /// Returns the pending socket error, if any.
+    #[must_use]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
     }
@@ -2091,6 +2104,7 @@ impl SctpListener {
     }
 
     /// Returns an iterator over incoming SCTP associations.
+    #[must_use]
     pub fn incoming(&self) -> SctpIncoming<'_> {
         SctpIncoming { listener: self }
     }
@@ -2128,6 +2142,7 @@ impl SctpSocket {
     }
 
     /// Returns all local addresses configured for this socket.
+    #[must_use]
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
         self.0.local_addrs()
     }
@@ -2171,11 +2186,13 @@ impl SctpSocket {
     }
 
     /// Lists association identifiers currently present on this socket.
+    #[must_use]
     pub fn assoc_ids(&self) -> io::Result<Vec<i32>> {
         self.0.assoc_ids()
     }
 
     /// Retrieves association status for the given association id.
+    #[must_use]
     pub fn assoc_status(&self, assoc_id: i32) -> io::Result<SctpAssocStatus> {
         self.0.assoc_status(assoc_id)
     }
@@ -2196,11 +2213,13 @@ impl SctpSocket {
     }
 
     /// Returns the read timeout.
+    #[must_use]
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.read_timeout()
     }
 
     /// Returns the write timeout.
+    #[must_use]
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
         self.0.write_timeout()
     }
@@ -2211,6 +2230,7 @@ impl SctpSocket {
     }
 
     /// Returns the pending socket error, if any.
+    #[must_use]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
     }
