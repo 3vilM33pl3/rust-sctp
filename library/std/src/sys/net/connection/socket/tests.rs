@@ -160,3 +160,80 @@ fn parse_send_failed_event_uses_sndinfo_layout() {
         SctpNotification::Unknown { notification_type: 0x8003, .. }
     ));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parse_remaining_notification_variants() {
+    // struct sctp_remote_error: type(2) flags(2) length(4) error(2) pad(2) assoc_id(4) data[]
+    let mut peer_error = vec![0u8; 16 + 3];
+    peer_error[0..2].copy_from_slice(&SCTP_EVENT_PEER_ERROR.to_ne_bytes());
+    peer_error[4..8].copy_from_slice(&19u32.to_ne_bytes());
+    peer_error[8..10].copy_from_slice(&0x0101u16.to_ne_bytes());
+    peer_error[12..16].copy_from_slice(&7i32.to_ne_bytes());
+    peer_error[16..19].copy_from_slice(b"abc");
+    assert_eq!(
+        parse_sctp_notification(&peer_error).unwrap(),
+        SctpNotification::PeerError { assoc_id: 7, error: 0x0101, data: b"abc".to_vec() }
+    );
+
+    // struct sctp_adaptation_event: type flags length indication(4) assoc_id(4)
+    let mut adaptation = vec![0u8; 16];
+    adaptation[0..2].copy_from_slice(&SCTP_EVENT_ADAPTATION.to_ne_bytes());
+    adaptation[8..12].copy_from_slice(&0xdead_beefu32.to_ne_bytes());
+    adaptation[12..16].copy_from_slice(&8i32.to_ne_bytes());
+    assert_eq!(
+        parse_sctp_notification(&adaptation).unwrap(),
+        SctpNotification::Adaptation { assoc_id: 8, indication: 0xdead_beef }
+    );
+
+    // struct sctp_authkey_event: type flags length keynumber(2) altkeynumber(2)
+    //                            indication(4) assoc_id(4)
+    let mut auth = vec![0u8; 20];
+    auth[0..2].copy_from_slice(&SCTP_EVENT_AUTHENTICATION.to_ne_bytes());
+    auth[8..10].copy_from_slice(&3u16.to_ne_bytes());
+    auth[10..12].copy_from_slice(&4u16.to_ne_bytes());
+    auth[12..16].copy_from_slice(&1u32.to_ne_bytes());
+    auth[16..20].copy_from_slice(&9i32.to_ne_bytes());
+    assert_eq!(
+        parse_sctp_notification(&auth).unwrap(),
+        SctpNotification::Authentication { assoc_id: 9, key_id: 3, alt_key_id: 4, indication: 1 }
+    );
+
+    // struct sctp_sender_dry_event: type flags length assoc_id(4)
+    let mut dry = vec![0u8; 12];
+    dry[0..2].copy_from_slice(&SCTP_EVENT_SENDER_DRY.to_ne_bytes());
+    dry[8..12].copy_from_slice(&10i32.to_ne_bytes());
+    assert_eq!(
+        parse_sctp_notification(&dry).unwrap(),
+        SctpNotification::SenderDry { assoc_id: 10 }
+    );
+
+    // struct sctp_stream_reset_event: type flags(2) length assoc_id(4) stream_list[]
+    let mut reset = vec![0u8; 12 + 4];
+    reset[0..2].copy_from_slice(&SCTP_EVENT_STREAM_RESET.to_ne_bytes());
+    reset[2..4].copy_from_slice(&0x0003u16.to_ne_bytes());
+    reset[4..8].copy_from_slice(&16u32.to_ne_bytes());
+    reset[8..12].copy_from_slice(&11i32.to_ne_bytes());
+    reset[12..14].copy_from_slice(&1u16.to_ne_bytes());
+    reset[14..16].copy_from_slice(&5u16.to_ne_bytes());
+    assert_eq!(
+        parse_sctp_notification(&reset).unwrap(),
+        SctpNotification::StreamReset { assoc_id: 11, flags: 0x0003, streams: vec![1, 5] }
+    );
+
+    // An unrecognised type is preserved verbatim rather than dropped.
+    let mut unknown = vec![0u8; 12];
+    unknown[0..2].copy_from_slice(&0x80ffu16.to_ne_bytes());
+    unknown[8..12].copy_from_slice(&12i32.to_ne_bytes());
+    assert_eq!(
+        parse_sctp_notification(&unknown).unwrap(),
+        SctpNotification::Unknown {
+            notification_type: 0x80ff,
+            assoc_id: Some(12),
+            payload: unknown.clone(),
+        }
+    );
+
+    // Truncated payloads are rejected, not misread.
+    assert!(parse_sctp_notification(&adaptation[..10]).is_none());
+}

@@ -230,7 +230,16 @@ mod udp_transport {
             "127.0.0.2:0".parse().unwrap(),
         ])
         .unwrap();
-        let listener = SctpListener::bind_multi_with_config(&addrs, config()).unwrap();
+        // 127.0.0.2 is a loopback alias on Linux but not configured by default on
+        // macOS or the BSDs; skip rather than fail there.
+        let listener = match SctpListener::bind_multi_with_config(&addrs, config()) {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == ErrorKind::AddrNotAvailable => {
+                eprintln!("skipping: second loopback address not configured ({e})");
+                return;
+            }
+            Err(e) => panic!("multi-bind: {e}"),
+        };
         let local = listener.local_addrs().unwrap();
         assert_eq!(local.len(), 2);
         assert_eq!(local[0].port(), local[1].port());
@@ -275,6 +284,9 @@ mod udp_transport {
                 .unwrap();
             client.send_with_info(b"record", None).unwrap();
         }
+        // Not synchronisation: the reads below block with a timeout. The pause
+        // lets both records land before the first read so the queued-record
+        // metadata path is the one exercised.
         thread::sleep(Duration::from_millis(50));
         let first = server.recv_message(&mut [0; 16]).unwrap();
         let info = first.info.unwrap();
@@ -354,6 +366,9 @@ mod udp_transport {
         client
             .send_with_info(b"second", Some(&SctpSendInfo { ppid: 23, ..Default::default() }))
             .unwrap();
+        // Widen the window in which "second" is already queued on the one-to-many
+        // socket when it is peeled off, so the prefetch hand-over is exercised.
+        // Either arrival order is correct behaviour.
         thread::sleep(Duration::from_millis(50));
         let peeled = socket.peeloff(id).unwrap();
         peeled.set_nonblocking(false).unwrap();
@@ -632,6 +647,9 @@ fn recv_nxtinfo_reports_next_message_metadata() {
     let stream = SctpStream::connect_with_config(addr, native_only()).unwrap();
     stream.set_recv_nxtinfo(true).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // `next` metadata can only describe a message that has already been
+    // queued; there is no API to wait for that, so give the second message
+    // time to arrive before reading the first.
     thread::sleep(Duration::from_millis(100));
 
     let mut buf = [0u8; 1024];
@@ -721,7 +739,7 @@ fn recv_message_reports_shutdown_notifications() {
         let (stream, _) = listener.accept().unwrap();
         let info = SctpSendInfo { stream: 3, ppid: 301, ..SctpSendInfo::default() };
         stream.send_with_info(b"hello", Some(&info)).unwrap();
-        thread::sleep(Duration::from_millis(100));
+        // SCTP delivers the DATA before the SHUTDOWN that follows it; no pause needed.
         stream.shutdown(Shutdown::Write).unwrap();
     });
 
