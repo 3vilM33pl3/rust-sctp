@@ -2608,7 +2608,9 @@ impl UdpSocket {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    pub fn bind_sctp_encapsulation(addr: SocketAddr, reuse_port: bool) -> io::Result<UdpSocket> {
+    /// Plain UDP bind with optional pre-bind `SO_REUSEPORT`; the SCTP-over-UDP
+    /// carrier socket. This does not enable kernel RFC 6951 encapsulation.
+    pub fn bind_with_reuse_port(addr: SocketAddr, reuse_port: bool) -> io::Result<UdpSocket> {
         init();
         let sock = Socket::new(addr_family(&addr), c::SOCK_DGRAM)?;
         if reuse_port {
