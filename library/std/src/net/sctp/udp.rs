@@ -565,7 +565,7 @@ impl UdpSctpSocket {
         }
         if state.sessions.len() >= MAX_ASSOCIATIONS {
             return Err(io::const_error!(
-                io::ErrorKind::OutOfMemory,
+                io::ErrorKind::QuotaExceeded,
                 "SCTP association limit reached"
             ));
         }
@@ -965,7 +965,7 @@ impl State {
     ) -> io::Result<i32> {
         let id = self.next_id;
         self.next_id = id.checked_add(1).ok_or_else(|| {
-            io::const_error!(io::ErrorKind::OutOfMemory, "SCTP association ids exhausted")
+            io::const_error!(io::ErrorKind::QuotaExceeded, "SCTP association ids exhausted")
         })?;
         self.handles.insert(handle, id);
         self.sessions.insert(
