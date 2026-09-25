@@ -696,10 +696,14 @@ fn get_addrs_sctp(
         return Err(io::const_error!(ErrorKind::InvalidData, "short SCTP getaddrs size response"));
     }
     let size = u32::from_ne_bytes(size_buf) as usize;
-    if size < 4 {
+    if size == 0 {
         return Ok(Vec::new());
     }
-    let mut buffer = vec![0u8; size];
+    // The size query reports the address bytes only. libc's `sctp_getladdrs`/
+    // `sctp_getpaddrs` add a full `sockaddr_storage` on top before the fetch so
+    // the `sget_assoc_id` header and the last address always fit; a buffer of
+    // exactly `size` made the kernel return only as many addresses as fitted.
+    let mut buffer = vec![0u8; size + mem::size_of::<c::sockaddr_storage>()];
     buffer[..4].copy_from_slice(&assoc_id.to_ne_bytes());
     let n = get_sockopt_bytes(sock, IPPROTO_SCTP_FREEBSD, addrs_opt, &mut buffer)?;
     if n < 4 {
@@ -1005,17 +1009,15 @@ impl SctpStream {
     }
 
     pub fn local_addrs(&self) -> io::Result<Vec<SocketAddr>> {
-        match resolve_assoc_id(&self.inner, self.assoc_id) {
-            Ok(id) => {
-                let addrs = local_addrs_sctp(&self.inner, id)?;
-                if addrs.is_empty() && !self.local_addrs.is_empty() {
-                    Ok(self.local_addrs.clone())
-                } else {
-                    Ok(addrs)
-                }
-            }
-            Err(_) if !self.local_addrs.is_empty() => Ok(self.local_addrs.clone()),
-            Err(_) => self.socket_addr().map(|addr| vec![addr]),
+        // Bound addresses belong to the endpoint, so the kernel reports them for
+        // association id 0 before any association exists. Ask it first: the
+        // cached bind list does not know about later `bindx_add`/`bindx_remove`.
+        let id = resolve_assoc_id(&self.inner, self.assoc_id).unwrap_or(0);
+        match local_addrs_sctp(&self.inner, id) {
+            Ok(addrs) if !addrs.is_empty() => Ok(addrs),
+            Ok(_) | Err(_) if !self.local_addrs.is_empty() => Ok(self.local_addrs.clone()),
+            Ok(_) => self.socket_addr().map(|addr| vec![addr]),
+            Err(e) => Err(e),
         }
     }
 

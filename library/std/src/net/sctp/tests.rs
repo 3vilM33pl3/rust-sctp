@@ -504,7 +504,8 @@ mod udp_transport {
 }
 use crate::net::{
     Ipv4Addr, Ipv6Addr, SctpEventMask, SctpListener, SctpMultiAddr, SctpNotification, SctpSendInfo,
-    SctpSocket, SctpStream, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6,
+    SctpSocket, SctpStream, SctpTransportConfig, SctpTransportPolicy, Shutdown, SocketAddr,
+    SocketAddrV4, SocketAddrV6,
 };
 #[cfg(target_os = "linux")]
 use crate::thread;
@@ -559,6 +560,24 @@ fn localhost_listener() -> (SctpListener, SocketAddr) {
     let listener = SctpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     (listener, addr)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bindx_add_is_visible_in_local_addrs_before_connecting() {
+    // `local_addrs` used to return the bind-time cache for an unconnected stream,
+    // so an address added with `bindx_add` was never reported.
+    let native = SctpTransportConfig { policy: SctpTransportPolicy::NativeOnly, udp: None };
+    let stream = match SctpStream::bind_with_config("127.0.0.1:0".parse().unwrap(), native) {
+        Ok(s) => s,
+        Err(e) if e.kind() == ErrorKind::Unsupported => return, // no kernel SCTP
+        Err(e) => panic!("bind: {e}"),
+    };
+    let port = stream.local_addr().unwrap().port();
+    stream.bindx_add(&[SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), port)]).unwrap();
+    let locals = stream.local_addrs().unwrap();
+    assert!(locals.len() >= 2, "expected the added address to be reported, got {locals:?}");
+    assert!(locals.iter().any(|a| a.ip() == Ipv4Addr::new(127, 0, 0, 2)), "{locals:?}");
 }
 
 #[cfg(target_os = "linux")]
