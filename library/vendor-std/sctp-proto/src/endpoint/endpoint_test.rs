@@ -440,7 +440,7 @@ fn establish_session_pair(
         return Err(Error::Other("unexpected ppi".to_owned()));
     }
 
-    if buf[..n] != hello_msg {
+    if buf[..n] != hello_msg[..] {
         return Err(Error::Other("received data mismatch".to_owned()));
     }
     pair.drive();
@@ -855,14 +855,14 @@ fn test_assoc_reliable_retransmission() -> Result<()> {
     let (n, ppi) = (chunks.len(), chunks.ppi);
     chunks.read(&mut buf)?;
     assert_eq!(n, msg1.len(), "unexpected length of received data");
-    assert_eq!(&buf[..n], &msg1, "unexpected length of received data");
+    assert_eq!(&buf[..n], &msg1[..], "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
     let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
     let (n, ppi) = (chunks.len(), chunks.ppi);
     chunks.read(&mut buf)?;
     assert_eq!(n, msg2.len(), "unexpected length of received data");
-    assert_eq!(&buf[..n], &msg2, "unexpected length of received data");
+    assert_eq!(&buf[..n], &msg2[..], "unexpected length of received data");
     assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
 
     pair.drive();
