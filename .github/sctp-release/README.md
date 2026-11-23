@@ -5,7 +5,7 @@
 
 ## What a run does
 
-1. **Detect** (GitHub-hosted, daily at 06:47 UTC). Lists upstream `1.N.M`
+1. **Detect** (GitHub-hosted, daily at 04:47 UTC). Lists upstream `1.N.M`
    tags, keeps the newest patch of every minor version from `MIN_MINOR` on,
    and drops those that already have a `rust-1.N.M-sctp.K` tag here or an
    open `sctp-release-blocked` issue. Betas and nightlies have no such tags.
