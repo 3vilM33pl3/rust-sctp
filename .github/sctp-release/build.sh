@@ -53,7 +53,7 @@ step() { echo "::group::$*"; }
 end() { echo "::endgroup::"; }
 
 step "Tidy"
-python3 x.py test tidy
+python3 x.py test tidy --set rust.channel=stable
 end
 
 step "SCTP std tests (stage 1)"
