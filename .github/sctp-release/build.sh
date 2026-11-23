@@ -53,7 +53,8 @@ step() { echo "::group::$*"; }
 end() { echo "::endgroup::"; }
 
 step "Tidy"
-python3 x.py test tidy --set rust.channel=stable
+git submodule update --init --depth 1 --jobs 8
+python3 x.py test tidy --set rust.channel=stable --set rust.remap-debuginfo=false
 end
 
 step "SCTP std tests (stage 1)"
