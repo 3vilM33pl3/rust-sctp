@@ -810,18 +810,6 @@ impl PartialOrd<[u8]> for Bytes {
     }
 }
 
-impl PartialEq<Bytes> for [u8] {
-    fn eq(&self, other: &Bytes) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<Bytes> for [u8] {
-    fn partial_cmp(&self, other: &Bytes) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self, other)
-    }
-}
-
 impl PartialEq<str> for Bytes {
     fn eq(&self, other: &str) -> bool {
         self.as_slice() == other.as_bytes()
@@ -831,18 +819,6 @@ impl PartialEq<str> for Bytes {
 impl PartialOrd<str> for Bytes {
     fn partial_cmp(&self, other: &str) -> Option<cmp::Ordering> {
         self.as_slice().partial_cmp(other.as_bytes())
-    }
-}
-
-impl PartialEq<Bytes> for str {
-    fn eq(&self, other: &Bytes) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<Bytes> for str {
-    fn partial_cmp(&self, other: &Bytes) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self.as_bytes(), other)
     }
 }
 
@@ -858,18 +834,6 @@ impl PartialOrd<Vec<u8>> for Bytes {
     }
 }
 
-impl PartialEq<Bytes> for Vec<u8> {
-    fn eq(&self, other: &Bytes) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<Bytes> for Vec<u8> {
-    fn partial_cmp(&self, other: &Bytes) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self, other)
-    }
-}
-
 impl PartialEq<String> for Bytes {
     fn eq(&self, other: &String) -> bool {
         *self == other[..]
@@ -879,42 +843,6 @@ impl PartialEq<String> for Bytes {
 impl PartialOrd<String> for Bytes {
     fn partial_cmp(&self, other: &String) -> Option<cmp::Ordering> {
         self.as_slice().partial_cmp(other.as_bytes())
-    }
-}
-
-impl PartialEq<Bytes> for String {
-    fn eq(&self, other: &Bytes) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<Bytes> for String {
-    fn partial_cmp(&self, other: &Bytes) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self.as_bytes(), other)
-    }
-}
-
-impl PartialEq<Bytes> for &[u8] {
-    fn eq(&self, other: &Bytes) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<Bytes> for &[u8] {
-    fn partial_cmp(&self, other: &Bytes) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self, other)
-    }
-}
-
-impl PartialEq<Bytes> for &str {
-    fn eq(&self, other: &Bytes) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<Bytes> for &str {
-    fn partial_cmp(&self, other: &Bytes) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self.as_bytes(), other)
     }
 }
 
