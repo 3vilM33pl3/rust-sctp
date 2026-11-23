@@ -1590,18 +1590,6 @@ impl PartialOrd<[u8]> for BytesMut {
     }
 }
 
-impl PartialEq<BytesMut> for [u8] {
-    fn eq(&self, other: &BytesMut) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<BytesMut> for [u8] {
-    fn partial_cmp(&self, other: &BytesMut) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self, other)
-    }
-}
-
 impl PartialEq<str> for BytesMut {
     fn eq(&self, other: &str) -> bool {
         &**self == other.as_bytes()
@@ -1611,18 +1599,6 @@ impl PartialEq<str> for BytesMut {
 impl PartialOrd<str> for BytesMut {
     fn partial_cmp(&self, other: &str) -> Option<cmp::Ordering> {
         (**self).partial_cmp(other.as_bytes())
-    }
-}
-
-impl PartialEq<BytesMut> for str {
-    fn eq(&self, other: &BytesMut) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<BytesMut> for str {
-    fn partial_cmp(&self, other: &BytesMut) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self.as_bytes(), other)
     }
 }
 
@@ -1638,18 +1614,6 @@ impl PartialOrd<Vec<u8>> for BytesMut {
     }
 }
 
-impl PartialEq<BytesMut> for Vec<u8> {
-    fn eq(&self, other: &BytesMut) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<BytesMut> for Vec<u8> {
-    fn partial_cmp(&self, other: &BytesMut) -> Option<cmp::Ordering> {
-        other.partial_cmp(self)
-    }
-}
-
 impl PartialEq<String> for BytesMut {
     fn eq(&self, other: &String) -> bool {
         *self == other[..]
@@ -1659,18 +1623,6 @@ impl PartialEq<String> for BytesMut {
 impl PartialOrd<String> for BytesMut {
     fn partial_cmp(&self, other: &String) -> Option<cmp::Ordering> {
         (**self).partial_cmp(other.as_bytes())
-    }
-}
-
-impl PartialEq<BytesMut> for String {
-    fn eq(&self, other: &BytesMut) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<BytesMut> for String {
-    fn partial_cmp(&self, other: &BytesMut) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self.as_bytes(), other)
     }
 }
 
@@ -1689,30 +1641,6 @@ where
 {
     fn partial_cmp(&self, other: &&'a T) -> Option<cmp::Ordering> {
         self.partial_cmp(*other)
-    }
-}
-
-impl PartialEq<BytesMut> for &[u8] {
-    fn eq(&self, other: &BytesMut) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<BytesMut> for &[u8] {
-    fn partial_cmp(&self, other: &BytesMut) -> Option<cmp::Ordering> {
-        <[u8] as PartialOrd<[u8]>>::partial_cmp(self, other)
-    }
-}
-
-impl PartialEq<BytesMut> for &str {
-    fn eq(&self, other: &BytesMut) -> bool {
-        *other == *self
-    }
-}
-
-impl PartialOrd<BytesMut> for &str {
-    fn partial_cmp(&self, other: &BytesMut) -> Option<cmp::Ordering> {
-        other.partial_cmp(self)
     }
 }
 
