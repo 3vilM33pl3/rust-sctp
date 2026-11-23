@@ -15,8 +15,16 @@ fi
 
 upstream=$(git ls-remote --tags --refs "$UPSTREAM_URL" '1.*' |
   sed 's#.*refs/tags/##' | grep -E '^1\.[0-9]+\.[0-9]+$' || true)
-ours=$(git ls-remote --tags --refs origin "${TAG_PREFIX}1.*-sctp.*" |
-  sed 's#.*refs/tags/##' | sed "s/^${TAG_PREFIX}//" || true)
+# A version counts as released only once its GitHub Release exists: a tag
+# left behind by a failed publish does not stop the next run from retrying
+# (which then cuts the next -sctp.K).
+ours=""
+if command -v gh >/dev/null && [[ -n "${GH_TOKEN:-}" ]]; then
+  ours=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' |
+    sed "s/^${TAG_PREFIX:-}//")
+else
+  die "detect.sh needs gh and GH_TOKEN to list published releases"
+fi
 blocked=""
 if command -v gh >/dev/null && [[ -n "${GH_TOKEN:-}" ]]; then
   blocked=$(gh issue list --state open --label "$BLOCKED_LABEL" --json title \

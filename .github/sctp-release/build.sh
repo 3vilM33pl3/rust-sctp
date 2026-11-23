@@ -34,7 +34,7 @@ profile = "dist"
 [build]
 description = "SCTP $version"
 extended = true
-tools = ["cargo"]
+tools = ["cargo", "rustdoc"]
 jobs = $jobs
 
 [llvm]
@@ -67,16 +67,26 @@ cargo="$root/build/$host/stage0/bin/cargo"
 end
 
 step "Dist: rustc, rust-std, cargo, rust-src"
+# build/ is kept between runs; drop tarballs from earlier versions so only
+# this build's files are tested and published.
+rm -rf build/dist
 python3 x.py dist rustc rust-std cargo rust-src
 end
+
+pv="$UPSTREAM_TAG-dev"   # package version on the dev channel
+tarballs=(
+  "build/dist/rustc-$pv-$host.tar.xz"
+  "build/dist/rust-std-$pv-$host.tar.xz"
+  "build/dist/cargo-$pv-$host.tar.xz"
+  "build/dist/rust-src-$pv.tar.xz"
+)
+for t in "${tarballs[@]}"; do [[ -f "$t" ]] || die "x.py dist did not produce $t"; done
 
 step "Smoke-test the installed toolchain"
 smoke="$OUT_DIR/smoke"
 rm -rf "$smoke"; mkdir -p "$smoke/prefix"
-for t in build/dist/{rustc,rust-std,cargo,rust-src}-*-$host.tar.xz build/dist/rust-src-*.tar.xz; do
-  [[ -f "$t" ]] || continue
+for t in "${tarballs[@]}"; do
   d="$smoke/$(basename "$t" .tar.xz)"
-  [[ -d "$d" ]] && continue
   tar -C "$smoke" -xJf "$t"
   "$d/install.sh" --prefix="$smoke/prefix" --disable-ldconfig >/dev/null
 done
@@ -91,12 +101,13 @@ fn main() {
 RS
 "$smoke/prefix/bin/rustc" --edition 2024 -o "$smoke/sctp" "$smoke/sctp.rs"
 "$smoke/sctp"
+"$smoke/prefix/bin/rustdoc" --version
+"$smoke/prefix/bin/rustdoc" --edition 2024 -o "$smoke/doc" "$smoke/sctp.rs"
 end
 
 step "Package"
 rm -rf "$OUT_DIR/dist"; mkdir -p "$OUT_DIR/dist"
-cp build/dist/{rustc,rust-std,cargo}-*-$host.tar.xz "$OUT_DIR/dist/"
-cp build/dist/rust-src-*.tar.xz "$OUT_DIR/dist/"
+cp "${tarballs[@]}" "$OUT_DIR/dist/"
 cp "$here/install-toolchain.sh" "$OUT_DIR/dist/install-$version.sh"
 (cd "$OUT_DIR/dist" && sha256sum ./* | sed 's# \./# #' >SHA256SUMS)
 ls -l "$OUT_DIR/dist"
