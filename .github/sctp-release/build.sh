@@ -53,7 +53,7 @@ step() { echo "::group::$*"; }
 end() { echo "::endgroup::"; }
 
 step "Tidy"
-git submodule update --init --depth 1 --jobs 8
+git submodule update --init --force --depth 1 --jobs 8
 python3 x.py test tidy --set rust.channel=stable --set rust.remap-debuginfo=false
 end
 
