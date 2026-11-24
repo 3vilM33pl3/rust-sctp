@@ -34,6 +34,7 @@ gh release upload "$version" --clobber "${new[@]}" "$work/install-$version.sh" "
 
 case "$host" in
   aarch64-apple-darwin) title="macOS, Apple Silicon" ;;
+  aarch64-unknown-linux-gnu) title="64-bit Raspberry Pi OS and other ARM64 Linux" ;;
   *) title="$host" ;;
 esac
 gh release view "$version" --json body --jq .body >"$work/notes.md"
@@ -42,9 +43,12 @@ if ! grep -q "^## Install ($title)" "$work/notes.md"; then
     echo
     echo "## Install ($title)"
     echo
-    echo "Built natively for \`$host\`; \`rustc --version\` prints \`$(cat "$OUT_DIR/rustc-version-$host.txt")\`."
+    echo "Built for \`$host\`; \`rustc --version\` prints \`$(cat "$OUT_DIR/rustc-version-$host.txt")\`."
     if [[ "$host" == *-apple-darwin ]]; then
       echo "macOS has no kernel SCTP, so std uses its SCTP-over-UDP backend there. Needs macOS 11 or later."
+    fi
+    if [[ "$host" == aarch64-unknown-linux-gnu ]]; then
+      echo "Cross-built against glibc 2.17, so it runs on Raspberry Pi OS (64-bit) and any ARM64 Linux from that era on. Native SCTP needs \`sudo modprobe sctp\`."
     fi
     echo
     echo '```sh'

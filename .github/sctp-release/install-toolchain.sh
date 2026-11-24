@@ -5,7 +5,7 @@
 #   ./install-rust-1.100.0-sctp.1.sh [prefix]
 #
 # Run it in a directory holding the release's .tar.xz files for this
-# machine (x86_64 Linux or Apple Silicon macOS). The default
+# machine (x86_64 or ARM64 Linux, or Apple Silicon macOS). The default
 # prefix is ~/.local/share/rust-sctp/<release>.
 set -euo pipefail
 release=$(basename "$0" .sh); release=${release#install-}
@@ -14,6 +14,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 cd "$(dirname "$0")"
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) host=x86_64-unknown-linux-gnu ;;
+  Linux/aarch64) host=aarch64-unknown-linux-gnu ;;
   Darwin/arm64) host=aarch64-apple-darwin ;;
   *) echo "no prebuilt toolchain for $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
