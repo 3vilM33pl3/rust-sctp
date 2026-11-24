@@ -22,6 +22,19 @@ next_release_tag() {
   echo "${TAG_PREFIX}$t-sctp.$(( ${n:-0} + 1 ))"
 }
 
+# sha256sum is GNU coreutils; macOS ships shasum instead.
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
+
+# Newest published SCTP release tag for an upstream tag, or nothing.
+latest_release_tag() {
+  local t="$1" n
+  n=$(git ls-remote --tags --refs origin "${TAG_PREFIX}$t-sctp.*" | sed 's#.*refs/tags/##' |
+      sed -n "s/^${TAG_PREFIX}$t-sctp\.\([0-9][0-9]*\)$/\1/p" | sort -n | tail -1)
+  [[ -n "$n" ]] && echo "${TAG_PREFIX}$t-sctp.$n"
+}
+
 # Directory for logs and outputs shared between steps.
 OUT_DIR="${SCTP_RELEASE_OUT:-${RUNNER_TEMP:-/tmp}/sctp-release}"
 mkdir -p "$OUT_DIR"

@@ -6,10 +6,12 @@
 #
 # The toolchain is built on the "dev" channel so that #![feature(sctp)]
 # is usable: rustc reports "1.N.M-dev", and the tarballs are named
-# <component>-1.N.M-dev-x86_64-unknown-linux-gnu.tar.xz.
+# <component>-1.N.M-dev-<host>.tar.xz.
 #
-# Needs: python3, a C/C++ toolchain, cmake, ninja, SCTP kernel support
-# (/proc/net/sctp) and roughly 60 GB free for build/. Upstream does not
+# Runs on x86_64 Linux and on Apple Silicon macOS. Linux needs SCTP kernel
+# support (/proc/net/sctp); macOS has no kernel SCTP, so there std uses its
+# SCTP-over-UDP backend and the tests exercise that. Both need python3, a
+# C/C++ toolchain, cmake, ninja and roughly 60 GB free for build/. Upstream does not
 # publish CI LLVM for release tags, so LLVM is built from source; keep
 # build/ between runs to reuse it.
 # Leaves the tarballs in $OUT_DIR/dist.
@@ -21,10 +23,20 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 . "$OUT_DIR/state.env"
 
-[[ -e /proc/net/sctp/assocs ]] || die "SCTP kernel support is not active (try: sudo modprobe sctp)"
-
-host=x86_64-unknown-linux-gnu
-jobs="${SCTP_RELEASE_JOBS:-$(nproc)}"
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64)
+    host=x86_64-unknown-linux-gnu
+    [[ -e /proc/net/sctp/assocs ]] || die "SCTP kernel support is not active (try: sudo modprobe sctp)"
+    ;;
+  Darwin/arm64)
+    host=aarch64-apple-darwin
+    # Without this the binaries would only run on the build machine's macOS
+    # version or newer; 11.0 is the oldest macOS on Apple Silicon.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+    ;;
+  *) die "unsupported build host $(uname -s)/$(uname -m)" ;;
+esac
+jobs="${SCTP_RELEASE_JOBS:-$(getconf _NPROCESSORS_ONLN)}"
 
 cat >bootstrap.toml <<TOML
 # Written by .github/sctp-release/build.sh
@@ -52,10 +64,13 @@ TOML
 step() { echo "::group::$*"; }
 end() { echo "::endgroup::"; }
 
-step "Tidy"
 git submodule update --init --force --depth 1 --jobs 8
-python3 x.py test tidy --set rust.channel=stable --set rust.remap-debuginfo=false
-end
+# Tidy checks the sources, not the platform, so the Linux build covers it.
+if [[ "$host" == x86_64-unknown-linux-gnu ]]; then
+  step "Tidy"
+  python3 x.py test tidy --set rust.channel=stable --set rust.remap-debuginfo=false
+  end
+fi
 
 step "SCTP std tests (stage 1)"
 python3 x.py test library/std --stage 1 --test-args net::sctp 2>&1 | tee "$OUT_DIR/sctp-tests.log"
@@ -91,7 +106,8 @@ for t in "${tarballs[@]}"; do
   tar -C "$smoke" -xJf "$t"
   "$d/install.sh" --prefix="$smoke/prefix" --disable-ldconfig >/dev/null
 done
-"$smoke/prefix/bin/rustc" --version | tee "$OUT_DIR/rustc-version.txt"
+"$smoke/prefix/bin/rustc" --version | tee "$OUT_DIR/rustc-version-$host.txt"
+cp "$OUT_DIR/rustc-version-$host.txt" "$OUT_DIR/rustc-version.txt"
 cat >"$smoke/sctp.rs" <<'RS'
 #![feature(sctp)]
 use std::net::SctpListener;
@@ -110,6 +126,6 @@ step "Package"
 rm -rf "$OUT_DIR/dist"; mkdir -p "$OUT_DIR/dist"
 cp "${tarballs[@]}" "$OUT_DIR/dist/"
 cp "$here/install-toolchain.sh" "$OUT_DIR/dist/install-$version.sh"
-(cd "$OUT_DIR/dist" && sha256sum ./* | sed 's# \./# #' >SHA256SUMS)
+(cd "$OUT_DIR/dist" && sha256 ./* | sed 's# \./# #' >SHA256SUMS)
 ls -l "$OUT_DIR/dist"
 end
