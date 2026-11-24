@@ -38,6 +38,12 @@ case "$(uname -s)/$(uname -m)" in
 esac
 jobs="${SCTP_RELEASE_JOBS:-$(getconf _NPROCESSORS_ONLN)}"
 
+# The std SCTP tests import Linux-only items unconditionally, which is an
+# unused-import warning, and so an error under deny-warnings, on other hosts.
+# Warnings stay errors on Linux, where every source and test is checked.
+deny_warnings=true
+[[ "$host" == x86_64-unknown-linux-gnu ]] || deny_warnings=false
+
 cat >bootstrap.toml <<TOML
 # Written by .github/sctp-release/build.sh
 change-id = "ignore"
@@ -56,6 +62,7 @@ ninja = true
 [rust]
 channel = "dev"
 download-rustc = false
+deny-warnings = $deny_warnings
 
 [dist]
 compression-formats = ["xz"]
