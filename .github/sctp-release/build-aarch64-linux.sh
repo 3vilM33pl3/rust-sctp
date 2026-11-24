@@ -71,6 +71,9 @@ description = "SCTP $version"
 extended = true
 tools = ["cargo", "rustdoc"]
 jobs = $jobs
+# Link cargo's OpenSSL, curl and libgit2 statically from vendored sources,
+# as upstream's dist builds do: the cross sysroot has no target libssl.
+cargo-native-static = true
 
 [llvm]
 download-ci-llvm = false
