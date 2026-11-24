@@ -34,6 +34,14 @@
    in the queue until the Mac is online, for up to 24 hours. A macOS failure
    leaves the Linux release as it is and opens no issue.
 
+6. **ARM64 Linux** (`build-aarch64-linux.sh` and `attach.sh`, the Linux
+   runner). Cross-builds the same tag for `aarch64-unknown-linux-gnu` in a
+   Docker image with a crosstool-ng compiler against glibc 2.17
+   (`aarch64-linux/`), so it runs on 64-bit Raspberry Pi OS. It checks that
+   no binary needs a newer glibc, compiles and runs an SCTP program under
+   qemu-user, then attaches the tarballs like the macOS job. The std tests
+   are not repeated for this target.
+
 A conflict or a red test opens an issue titled `SCTP release blocked: 1.N.M`
 (`report-failure.sh`) and publishes nothing. The daily run skips that version
 while the issue is open.
@@ -59,6 +67,9 @@ cargo +sctp-1.100.0-sctp.1 build         # linked with rustup when it is install
   `python3`, `cmake`, `ninja`, a C/C++ toolchain, `gh`, and about 80 GB free.
   The first build compiles LLVM; later builds reuse `build/` in the runner's
   workspace. Expect 3 to 6 hours on 8 cores for a new minor version.
+- For ARM64 Linux: the Linux runner's user in the `docker` group, and
+  qemu-user-static with binfmt_misc registered for aarch64 (F flag). The
+  image takes about half an hour to build the first time and is cached.
 - For macOS: a runner on an Apple Silicon Mac with labels
   `self-hosted, macOS, ARM64, sctp-mac`, the Xcode command line tools,
   `python3`, `cmake`, `ninja`, `gh` and about 100 GB free.
@@ -72,8 +83,8 @@ Actions → SCTP release → Run workflow:
 - `from_dev`: port from `SCTP_DEV_BRANCH` again, to ship SCTP changes made
   since the last release of that line.
 - `dry_run`: build and test without pushing or publishing.
-- `macos_only`: an existing release tag, e.g. `rust-1.100.0-sctp.1`. Builds
-  only macOS and adds it to that release.
+- `macos_only` / `arm64_linux_only`: an existing release tag, e.g.
+  `rust-1.100.0-sctp.1`. Builds only that platform and adds it to the release.
 
 When the SCTP series moves to a newer upstream base (a new `sctp-1.N` branch),
 update `SCTP_DEV_BRANCH` in `release.conf`.

@@ -24,6 +24,10 @@ on:
         description: 'Only build macOS for an existing release, e.g. rust-1.100.0-sctp.1'
         required: false
         default: ''
+      arm64_linux_only:
+        description: 'Only build ARM64 Linux (Raspberry Pi) for an existing release, e.g. rust-1.100.0-sctp.1'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -35,7 +39,7 @@ concurrency:
 
 jobs:
   detect:
-    if: ${{ !inputs.macos_only }}
+    if: ${{ !inputs.macos_only && !inputs.arm64_linux_only }}
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
@@ -141,7 +145,7 @@ jobs:
   # online (GitHub drops it after 24 hours).
   macos:
     needs: [detect, release]
-    if: ${{ always() && (inputs.macos_only || (needs.release.result == 'success' && !inputs.dry_run)) }}
+    if: ${{ always() && !inputs.arm64_linux_only && (inputs.macos_only || (needs.release.result == 'success' && !inputs.dry_run)) }}
     runs-on: [self-hosted, macOS, ARM64, sctp-mac]
     timeout-minutes: 720
     strategy:
@@ -202,6 +206,77 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sctp-release-macos-logs-${{ matrix.version }}
+          path: |
+            ${{ runner.temp }}/sctp-release/*.log
+            ${{ runner.temp }}/sctp-release/*.txt
+          if-no-files-found: ignore
+
+  # Cross-build for 64-bit Raspberry Pi OS (aarch64-unknown-linux-gnu) on the
+  # Linux runner, in a Docker image with a glibc 2.17 cross compiler, and add
+  # it to the release the Linux job published.
+  arm64-linux:
+    needs: [detect, release]
+    if: ${{ always() && !inputs.macos_only && (inputs.arm64_linux_only || (needs.release.result == 'success' && !inputs.dry_run)) }}
+    runs-on: [self-hosted, linux, sctp]
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        version: ${{ fromJSON(inputs.arm64_linux_only && format('["{0}"]', inputs.arm64_linux_only) || needs.detect.outputs.versions) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+        with:
+          path: tools
+          sparse-checkout: .github/sctp-release
+
+      - name: Find the release
+        id: tag
+        working-directory: tools
+        run: |
+          . .github/sctp-release/lib.sh
+          v='${{ matrix.version }}'
+          if [[ "$v" == "$TAG_PREFIX"* ]]; then tag="$v"; else tag=$(latest_release_tag "$v"); fi
+          gh release view "$tag" --json tagName >/dev/null
+          up=${tag#"$TAG_PREFIX"}; up=${up%-sctp.*}
+          echo "name=$tag" | tee -a "$GITHUB_OUTPUT"
+          echo "upstream=$up" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check out ${{ steps.tag.outputs.name }}
+        uses: actions/checkout@v4
+        with:
+          path: src
+          ref: refs/tags/${{ steps.tag.outputs.name }}
+          fetch-depth: 0
+          # Keep build/ and build-aarch64/ between runs; both are ignored by git.
+          clean: false
+
+      - name: Prepare
+        run: |
+          SCTP_RELEASE_OUT="$RUNNER_TEMP/sctp-release"
+          echo "SCTP_RELEASE_OUT=$SCTP_RELEASE_OUT" >>"$GITHUB_ENV"
+          rm -rf "$SCTP_RELEASE_OUT"; mkdir -p "$SCTP_RELEASE_OUT"
+          echo "UPSTREAM_TAG=${{ steps.tag.outputs.upstream }}" >"$SCTP_RELEASE_OUT/state.env"
+          git -C src reset -q --hard
+
+      - name: Cross-build ${{ steps.tag.outputs.name }} for ARM64 Linux
+        working-directory: src
+        run: ../tools/.github/sctp-release/build-aarch64-linux.sh "${{ steps.tag.outputs.name }}"
+
+      - name: Attach to ${{ steps.tag.outputs.name }}
+        if: ${{ !inputs.dry_run }}
+        working-directory: src
+        run: ../tools/.github/sctp-release/attach.sh "${{ steps.tag.outputs.name }}"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sctp-release-arm64-linux-logs-${{ matrix.version }}
           path: |
             ${{ runner.temp }}/sctp-release/*.log
             ${{ runner.temp }}/sctp-release/*.txt
