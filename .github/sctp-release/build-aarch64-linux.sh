@@ -25,6 +25,7 @@ if [[ "${1:-}" != --inside ]]; then
   root=$(git rev-parse --show-toplevel)
   cd "$root"
   . "$OUT_DIR/state.env"
+  export UPSTREAM_TAG
   [[ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]] ||
     die "qemu-aarch64 is not registered with binfmt_misc; the cross-built toolchain cannot be checked"
 
