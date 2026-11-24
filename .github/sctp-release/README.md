@@ -25,6 +25,15 @@
    branch and tag, and creates a GitHub Release with the component tarballs,
    `install-rust-1.N.M-sctp.K.sh` and `SHA256SUMS`.
 
+5. **macOS** (`build.sh` and `attach.sh`, self-hosted
+   `[self-hosted, macOS, ARM64, sctp-mac]`). After the Linux release is
+   published, builds the same tag natively for `aarch64-apple-darwin`
+   (`MACOSX_DEPLOYMENT_TARGET=11.0`, std tests on the SCTP-over-UDP
+   backend), then uploads the tarballs to that release, merges
+   `SHA256SUMS` and adds a macOS install section to the notes. The job waits
+   in the queue until the Mac is online, for up to 24 hours. A macOS failure
+   leaves the Linux release as it is and opens no issue.
+
 A conflict or a red test opens an issue titled `SCTP release blocked: 1.N.M`
 (`report-failure.sh`) and publishes nothing. The daily run skips that version
 while the issue is open.
@@ -33,7 +42,7 @@ while the issue is open.
 
 ```sh
 mkdir rust-1.100.0-sctp.1 && cd rust-1.100.0-sctp.1
-gh release download rust-1.100.0-sctp.1 -R 3vilM33pl3/rust-sctp
+gh release download rust-1.100.0-sctp.1 -R 3vilM33pl3/rust-sctp   # the installer picks this host's files
 bash install-rust-1.100.0-sctp.1.sh      # ~/.local/share/rust-sctp/rust-1.100.0-sctp.1
 cargo +sctp-1.100.0-sctp.1 build         # linked with rustup when it is installed
 ```
@@ -50,6 +59,9 @@ cargo +sctp-1.100.0-sctp.1 build         # linked with rustup when it is install
   `python3`, `cmake`, `ninja`, a C/C++ toolchain, `gh`, and about 80 GB free.
   The first build compiles LLVM; later builds reuse `build/` in the runner's
   workspace. Expect 3 to 6 hours on 8 cores for a new minor version.
+- For macOS: a runner on an Apple Silicon Mac with labels
+  `self-hosted, macOS, ARM64, sctp-mac`, the Xcode command line tools,
+  `python3`, `cmake`, `ninja`, `gh` and about 100 GB free.
 
 ## Manual runs
 
@@ -60,6 +72,8 @@ Actions → SCTP release → Run workflow:
 - `from_dev`: port from `SCTP_DEV_BRANCH` again, to ship SCTP changes made
   since the last release of that line.
 - `dry_run`: build and test without pushing or publishing.
+- `macos_only`: an existing release tag, e.g. `rust-1.100.0-sctp.1`. Builds
+  only macOS and adds it to that release.
 
 When the SCTP series moves to a newer upstream base (a new `sctp-1.N` branch),
 update `SCTP_DEV_BRANCH` in `release.conf`.
