@@ -1,63 +1,54 @@
 #!/usr/bin/env bash
 # Cross-builds the checked-out release tag for aarch64-unknown-linux-gnu
-# (64-bit Raspberry Pi OS and other ARM64 Linux) on an x86_64 Linux runner
-# with Docker, then leaves rustc, rust-std and cargo tarballs in
-# $OUT_DIR/dist for attach.sh.
+# (64-bit Raspberry Pi OS and other ARM64 Linux) on an x86_64 Linux runner,
+# then leaves rustc, rust-std and cargo tarballs in $OUT_DIR/dist for
+# attach.sh.
 #
 #   build-aarch64-linux.sh rust-1.100.0-sctp.1
 #
-# The toolchain is linked against glibc 2.17 by a crosstool-ng compiler in
-# the image from aarch64-linux/, so it runs on any 64-bit Raspberry Pi OS.
-# It is checked by running it under qemu-user (binfmt_misc must have
-# qemu-aarch64 registered with the F flag). The std tests are not run here:
-# the x86_64 Linux release job runs them on the same sources.
+# The toolchain is linked against glibc 2.17 by a crosstool-ng compiler that
+# aarch64-linux/toolchain.sh builds once, as the runner user, so it runs on
+# any 64-bit Raspberry Pi OS. Nothing here needs root or Docker. It is
+# checked by running it under qemu-user (binfmt_misc must have qemu-aarch64
+# registered with the F flag). The std tests are not run here: the x86_64
+# Linux release job runs them on the same sources.
 #
-# Needs: docker usable by the runner user, and about 60 GB free for
-# build-aarch64/ (kept between runs, like build/).
+# Needs: the host packages listed in aarch64-linux/toolchain.sh, about 5 GB
+# for the cross compiler and about 60 GB free for build-aarch64/ (kept
+# between runs, like build/).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
 target=aarch64-unknown-linux-gnu
-image=sctp-rust-dist-aarch64-linux
-
-if [[ "${1:-}" != --inside ]]; then
-  version="${1:?usage: build-aarch64-linux.sh <release tag>}"
-  root=$(git rev-parse --show-toplevel)
-  cd "$root"
-  . "$OUT_DIR/state.env"
-  export UPSTREAM_TAG
-  [[ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]] ||
-    die "qemu-aarch64 is not registered with binfmt_misc; the cross-built toolchain cannot be checked"
-
-  echo "::group::Submodules"
-  git submodule update --init --force --depth 1 --jobs 8
-  echo "::endgroup::"
-
-  echo "::group::Cross toolchain image"
-  ctx="$OUT_DIR/docker-ctx"
-  rm -rf "$ctx"; mkdir -p "$ctx"
-  cp -R src/ci/docker/scripts "$ctx/scripts"
-  cp "$here/aarch64-linux/Dockerfile" "$here/aarch64-linux/aarch64-linux-gnu.defconfig" "$ctx/"
-  docker build -t "$image" "$ctx"
-  echo "::endgroup::"
-
-  mkdir -p build-aarch64/home
-  docker run --rm --network host \
-    -u "$(id -u):$(id -g)" \
-    -e HOME=/checkout/build-aarch64/home \
-    -e UPSTREAM_TAG -e SCTP_RELEASE_JOBS \
-    -v "$root:/checkout" -v "$here:/tools:ro" -v "$OUT_DIR:/out" \
-    -w /checkout "$image" \
-    bash /tools/build-aarch64-linux.sh --inside "$version"
-  exit 0
-fi
-
-# Inside the container.
-version="$2"
-OUT_DIR=/out
+version="${1:?usage: build-aarch64-linux.sh <release tag>}"
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+. "$OUT_DIR/state.env"
+[[ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]] ||
+  die "qemu-aarch64 is not registered with binfmt_misc; the cross-built toolchain cannot be checked"
 step() { echo "::group::$*"; }
 end() { echo "::endgroup::"; }
 jobs="${SCTP_RELEASE_JOBS:-$(getconf _NPROCESSORS_ONLN)}"
+
+step "Submodules"
+git submodule update --init --force --depth 1 --jobs 8
+end
+
+xtools=$("$here/aarch64-linux/toolchain.sh" "$root/src/ci/docker/scripts")
+export PATH="$xtools/bin:$PATH"
+export CC_aarch64_unknown_linux_gnu=$target-gcc \
+  CXX_aarch64_unknown_linux_gnu=$target-g++ \
+  AR_aarch64_unknown_linux_gnu=$target-ar \
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=$target-gcc \
+  QEMU_LD_PREFIX="$xtools/$target/sysroot"
+"$target-gcc" --version | head -1
+# build-aarch64/ caches paths into the compiler (LLVM's CMake cache among
+# them), so start it afresh when the cross compiler changes.
+if [[ "$(cat build-aarch64/.sctp-xtools 2>/dev/null)" != "$(cat "$xtools/.sctp-stamp") $xtools" ]]; then
+  rm -rf build-aarch64
+  mkdir -p build-aarch64
+  echo "$(cat "$xtools/.sctp-stamp") $xtools" >build-aarch64/.sctp-xtools
+fi
 
 cat >bootstrap-aarch64.toml <<TOML
 # Written by .github/sctp-release/build-aarch64-linux.sh

@@ -212,7 +212,7 @@ jobs:
           if-no-files-found: ignore
 
   # Cross-build for 64-bit Raspberry Pi OS (aarch64-unknown-linux-gnu) on the
-  # Linux runner, in a Docker image with a glibc 2.17 cross compiler, and add
+  # Linux runner, with a glibc 2.17 cross compiler built as the runner user, and add
   # it to the release the Linux job published.
   arm64-linux:
     needs: [detect, release]
