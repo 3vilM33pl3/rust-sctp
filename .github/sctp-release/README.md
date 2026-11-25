@@ -35,9 +35,10 @@
    leaves the Linux release as it is and opens no issue.
 
 6. **ARM64 Linux** (`build-aarch64-linux.sh` and `attach.sh`, the Linux
-   runner). Cross-builds the same tag for `aarch64-unknown-linux-gnu` in a
-   Docker image with a crosstool-ng compiler against glibc 2.17
-   (`aarch64-linux/`), so it runs on 64-bit Raspberry Pi OS. It checks that
+   runner). Cross-builds the same tag for `aarch64-unknown-linux-gnu` with a
+   crosstool-ng compiler against glibc 2.17 (`aarch64-linux/`), built once
+   as the runner user without root or Docker, so it runs on 64-bit
+   Raspberry Pi OS. It checks that
    no binary needs a newer glibc, compiles and runs an SCTP program under
    qemu-user, then attaches the tarballs like the macOS job. The std tests
    are not repeated for this target.
@@ -67,9 +68,11 @@ cargo +sctp-1.100.0-sctp.1 build         # linked with rustup when it is install
   `python3`, `cmake`, `ninja`, a C/C++ toolchain, `gh`, and about 80 GB free.
   The first build compiles LLVM; later builds reuse `build/` in the runner's
   workspace. Expect 3 to 6 hours on 8 cores for a new minor version.
-- For ARM64 Linux: the Linux runner's user in the `docker` group, and
-  qemu-user-static with binfmt_misc registered for aarch64 (F flag). The
-  image takes about half an hour to build the first time and is cached.
+- For ARM64 Linux: the host packages listed in
+  `aarch64-linux/toolchain.sh`, and qemu-user-static with binfmt_misc
+  registered for aarch64 (F flag). The cross compiler takes about half an
+  hour to build the first time and is kept in `~/x-tools` (or
+  `$SCTP_XTOOLS`).
 - For macOS: a runner on an Apple Silicon Mac with labels
   `self-hosted, macOS, ARM64, sctp-mac`, the Xcode command line tools,
   `python3`, `cmake`, `ninja`, `gh` and about 100 GB free.
