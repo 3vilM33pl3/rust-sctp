@@ -38,7 +38,7 @@ fi
   echo "::group::Build the $target cross compiler (crosstool-ng $CT_NG)"
   work="$root/.work"
   rm -rf "$work" "$prefix"
-  mkdir -p "$work"
+  mkdir -p "$work" "$root/.tarballs"
   cd "$work"
 
   curl -Lf "https://github.com/crosstool-ng/crosstool-ng/archive/crosstool-ng-$CT_NG.tar.gz" | tar xzf -
@@ -58,7 +58,7 @@ CT_LOCAL_TARBALLS_DIR="$root/.tarballs"
 CT_SAVE_TARBALLS=y
 CT_LOG_PROGRESS_BAR=n
 CONFIG
-  # A newer host compiler defaults to C23, which the GCC 8 and binutils 2.32
+  # A newer host compiler defaults to C23, which the GCC 8 and binutils 2.29
   # era host code (and its companion libraries) does not build as.
   if [[ "$(gcc -dumpversion | cut -d. -f1)" -ge 15 ]]; then
     echo 'CT_EXTRA_CFLAGS_FOR_BUILD="-std=gnu17"' >>.config
